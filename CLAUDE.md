@@ -10,7 +10,7 @@ A single-user knowledge management tool inspired by NotebookLM. Upload documents
 - **Database**: Cloud Firestore
 - **Storage**: Cloud Storage
 - **Backend**: Cloud Functions (Node.js, TypeScript) in `functions/`
-- **RAG**: Gemini FileSearch API (single store, notebook isolation via metadata)
+- **RAG**: Gemini FileSearch Store API (single store, `uploadToFileSearchStore` with customMetadata)
 - **URL Extraction**: Jina Reader API
 - **Hosting**: Netlify
 
@@ -24,8 +24,9 @@ A single-user knowledge management tool inspired by NotebookLM. Upload documents
   - `src/lib/firestore.ts` — Typed Firestore collection/document helpers
   - `src/lib/formatters.ts` — Date, file size, text truncation formatters
   - `src/lib/api.ts` — Cloud Functions callable helper
+  - `src/lib/streaming.ts` — SSE streaming client for chat endpoint
   - `src/types/` — Shared TypeScript interfaces (Notebook, Source, Session, Message)
-  - `src/config/constants.ts` — File types, size limits, status config
+  - `src/config/constants.ts` — File types, size limits, status config, Gemini models, function URLs
 - `functions/src/` — Cloud Functions backend
   - `functions/src/services/` — API wrappers (Gemini, Jina, Storage)
   - `functions/src/middleware/` — Auth token validation
@@ -67,14 +68,18 @@ firebase deploy --only firestore:rules,firestore:indexes  # Deploy rules + index
 - Firestore composite indexes: define in `firestore.indexes.json`, single-field indexes are auto-created
 - Cloud Functions use v2 API (`firebase-functions/https`, `firebase-functions/firestore`)
 - Gemini SDK: use `@google/genai` (not `@google/generative-ai` which lacks Files API)
-- Upload pipeline: frontend uploads directly to Cloud Storage, Firestore trigger handles Gemini indexing
+- Upload pipeline: frontend uploads to Cloud Storage → Firestore trigger → `uploadToFileSearchStore` (single-step store upload with metadata)
+- Chat streaming: SSE via Cloud Functions v2 `onRequest` (not `onCall` — it doesn't support streaming)
+- Gemini FileSearch `metadataFilter` is broken at API level (silently returns no results) — metadata stored for future use but filtering not enabled
+- Gemini model IDs: use preview/stable strings (e.g. `gemini-3-flash-preview`, `gemini-2.5-flash`) — check for deprecations
+- Source tags: stored as `customMetadata` on Gemini store documents alongside `notebookId`
 
 ## Build Status
 
 - **Phase 0**: Complete (scaffold)
 - **Phase 1A**: Complete (auth, notebooks, file upload, source status, security rules)
-- **Phase 1B**: Not started (URL ingestion, chat, citations, model selection, session reset)
-- **Phase 1C**: Not started (summarization, archive, warm-up, deployment)
+- **Phase 1B**: Complete (URL ingestion, chat with streaming/citations, model selection, session reset, upload dialog with tags)
+- **Phase 1C**: Not started (summarization, archive, system status/warm-up, deployment)
 
 ## Full Requirements
 

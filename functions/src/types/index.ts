@@ -22,6 +22,8 @@ export interface Source {
   status: SourceStatus;
   failureReason: string | null;
   tags: { key: string; value: string }[];
+  startedAt: number | null;
+  processingMs: number | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }

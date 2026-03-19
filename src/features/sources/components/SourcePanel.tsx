@@ -1,43 +1,45 @@
-import { useRef } from "react";
-import { Upload, FileText } from "lucide-react";
+import { useState } from "react";
+import { Upload, Link, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Loader } from "@/components/ui/loader";
-import { FILE_INPUT_ACCEPT } from "@/config/constants";
-import { useSources } from "../hooks/useSources";
 import { useFileUpload } from "../hooks/useFileUpload";
 import { SourceCard } from "./SourceCard";
 import { UploadProgress } from "./UploadProgress";
-import { ValidationErrorList } from "./ValidationErrorList";
+import { UrlInput } from "./UrlInput";
+import { UploadDialog } from "./UploadDialog";
+import type { Source, SourceTag } from "@/types/source";
 
 interface SourcePanelProps {
   notebookId: string;
   userId: string;
+  sources: Source[];
+  loading: boolean;
 }
 
-export function SourcePanel({ notebookId, userId }: SourcePanelProps) {
-  const { sources, loading } = useSources(notebookId);
+export function SourcePanel({
+  notebookId,
+  userId,
+  sources,
+  loading,
+}: SourcePanelProps) {
   const {
     uploading,
     progress,
-    validationErrors,
     startUpload,
-    clearValidationErrors,
-    retrySource,
     removeSource,
+    retrySource,
   } = useFileUpload(notebookId, userId);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [showUrlInput, setShowUrlInput] = useState(false);
+  const [showUploadDialog, setShowUploadDialog] = useState(false);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && files.length > 0) {
-      const existingNames = sources.map((s) => s.displayName);
-      startUpload(files, existingNames);
-    }
-    // Reset input so the same file can be re-selected
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
+  const handleUploadConfirm = (files: File[], tags: SourceTag[]) => {
+    startUpload(files, tags);
   };
+
+  const existingNames = sources.map((s) => s.displayName);
+  const existingUrls = sources
+    .filter((s) => s.originalUrl)
+    .map((s) => s.originalUrl!);
 
   return (
     <div className="flex h-full flex-col">
@@ -51,30 +53,35 @@ export function SourcePanel({ notebookId, userId }: SourcePanelProps) {
             </span>
           )}
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={uploading}
-        >
-          <Upload className="mr-1.5 h-3.5 w-3.5" />
-          Upload
-        </Button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          accept={FILE_INPUT_ACCEPT}
-          onChange={handleFileChange}
-          className="hidden"
-        />
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowUrlInput(!showUrlInput)}
+            className="gap-1 text-xs"
+          >
+            <Link className="h-3.5 w-3.5" />
+            URL
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowUploadDialog(true)}
+            disabled={uploading}
+            className="gap-1 text-xs"
+          >
+            <Upload className="h-3.5 w-3.5" />
+            Upload
+          </Button>
+        </div>
       </div>
 
-      {/* Validation Errors */}
-      {validationErrors.length > 0 && (
-        <ValidationErrorList
-          errors={validationErrors}
-          onDismiss={clearValidationErrors}
+      {/* URL Input */}
+      {showUrlInput && (
+        <UrlInput
+          notebookId={notebookId}
+          existingUrls={existingUrls}
+          onClose={() => setShowUrlInput(false)}
         />
       )}
 
@@ -91,7 +98,7 @@ export function SourcePanel({ notebookId, userId }: SourcePanelProps) {
           <div className="flex flex-col items-center justify-center px-4 py-10 text-center">
             <FileText className="mb-3 h-8 w-8 text-muted-foreground/40" />
             <p className="text-sm text-muted-foreground">
-              No sources yet. Upload files to get started.
+              No sources yet. Upload files or add URLs to get started.
             </p>
           </div>
         ) : (
@@ -107,6 +114,14 @@ export function SourcePanel({ notebookId, userId }: SourcePanelProps) {
           </div>
         )}
       </div>
+
+      {/* Upload Dialog */}
+      <UploadDialog
+        open={showUploadDialog}
+        onOpenChange={setShowUploadDialog}
+        existingNames={existingNames}
+        onConfirm={handleUploadConfirm}
+      />
     </div>
   );
 }

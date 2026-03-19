@@ -1,6 +1,11 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, type Content } from "@google/genai";
 import * as admin from "firebase-admin";
-import { getGeminiApiKey } from "../config";
+import {
+  getGeminiApiKey,
+  getGeminiStoreId,
+  GEMINI_MODELS,
+  SYSTEM_PROMPT,
+} from "../config";
 
 let genaiClient: GoogleGenAI | null = null;
 
@@ -12,8 +17,9 @@ function getClient(): GoogleGenAI {
 }
 
 /**
- * Downloads a file from Cloud Storage, uploads it to a Gemini FileSearch store,
- * and returns the Gemini document/file ID.
+ * Uploads a file directly to the FileSearch Store with custom metadata.
+ * Uses the single-step uploadToFileSearchStore API.
+ * Returns the store document name (e.g. "fileSearchStores/xxx/documents/yyy").
  */
 export async function uploadToGeminiStore(
   storageRef: string,
@@ -22,41 +28,188 @@ export async function uploadToGeminiStore(
   metadata: Record<string, string>
 ): Promise<string> {
   const client = getClient();
+  const storeId = getGeminiStoreId();
 
-  // Download file from Cloud Storage to a temp buffer
+  // Download file from Cloud Storage
   const bucket = admin.storage().bucket();
   const file = bucket.file(storageRef);
   const [buffer] = await file.download();
 
-  // Upload to Gemini using the Files API
+  // Build custom metadata from all key-value pairs (notebookId + user tags)
+  const customMetadata: Array<{ key: string; stringValue: string }> = [];
+  for (const [key, value] of Object.entries(metadata)) {
+    if (key && value) {
+      customMetadata.push({ key, stringValue: value });
+    }
+  }
+
+  // Upload directly to the FileSearch Store (single step)
   const uint8 = new Uint8Array(buffer);
   const blob = new Blob([uint8], { type: mimeType });
-  const uploadResult = await client.files.upload({
+
+  const operation = await client.fileSearchStores.uploadToFileSearchStore({
     file: blob,
+    fileSearchStoreName: storeId,
     config: {
       displayName,
-      mimeType,
+      customMetadata,
     },
   });
 
-  if (!uploadResult.name) {
-    throw new Error("Gemini upload did not return a file name/ID");
+  // Extract document name from operation response
+  const response = operation.response as Record<string, unknown> | undefined;
+  const documentName = (response?.documentName as string) ?? "";
+
+  if (!documentName) {
+    console.warn("Upload succeeded but no document name returned");
   }
 
-  return uploadResult.name;
+  console.log(`File uploaded to store: ${documentName}`);
+  return documentName || storeId;
 }
 
 /**
- * Deletes a document from the Gemini FileSearch store.
+ * Deletes a document from the Gemini FileSearch Store.
  */
 export async function deleteFromGeminiStore(
   geminiDocId: string
 ): Promise<void> {
   const client = getClient();
+
   try {
-    await client.files.delete({ name: geminiDocId });
+    if (geminiDocId.startsWith("fileSearchStores/") && geminiDocId.includes("/documents/")) {
+      // Store document — delete from store
+      await (client.fileSearchStores.documents as any).delete({
+        name: geminiDocId,
+        force: true,
+      });
+    } else {
+      // Legacy file reference — delete from Files API
+      await client.files.delete({ name: geminiDocId });
+    }
   } catch (err: unknown) {
-    // Log but don't throw — document may already be deleted
-    console.warn(`Failed to delete Gemini doc ${geminiDocId}:`, err);
+    console.warn(`Failed to delete ${geminiDocId}:`, err);
   }
+}
+
+export interface ChatCitation {
+  index: number;
+  sourceId: string;
+  sourceName: string;
+  chunkText: string;
+}
+
+export type ChatChunk =
+  | { type: "token"; text: string }
+  | { type: "citations"; citations: ChatCitation[] }
+  | { type: "done" };
+
+/**
+ * Streams a chat response from Gemini using FileSearch Store for grounding.
+ * Queries the full store — metadata filtering is not yet reliable in Gemini API.
+ * Custom metadata (notebookId) is stored on documents for future filtering.
+ */
+export async function* queryWithFileSearch(
+  query: string,
+  history: Array<{ role: string; content: string }>,
+  notebookId: string,
+  modelId: string
+): AsyncGenerator<ChatChunk> {
+  const client = getClient();
+  const storeId = getGeminiStoreId();
+  const apiModel = GEMINI_MODELS[modelId] || "gemini-2.5-flash";
+
+  // Build conversation history
+  const contents: Content[] = [];
+  for (const msg of history) {
+    contents.push({
+      role: msg.role === "assistant" ? "model" : "user",
+      parts: [{ text: msg.content }],
+    });
+  }
+  contents.push({
+    role: "user",
+    parts: [{ text: query }],
+  });
+
+  // Query with FileSearch tool grounded in the store
+  // TODO: Add metadataFilter when Gemini API supports it reliably
+  const response = await client.models.generateContentStream({
+    model: apiModel,
+    contents,
+    config: {
+      systemInstruction: SYSTEM_PROMPT,
+      tools: [
+        {
+          fileSearch: {
+            fileSearchStoreNames: [storeId],
+          },
+        },
+      ],
+    },
+  });
+
+  let lastChunk: Record<string, unknown> | null = null;
+
+  for await (const chunk of response) {
+    const text = chunk.text ?? "";
+    if (text) {
+      yield { type: "token", text };
+    }
+    lastChunk = chunk as unknown as Record<string, unknown>;
+  }
+
+  // Extract citations from grounding metadata
+  const citations: ChatCitation[] = [];
+  try {
+    const candidates = (lastChunk as Record<string, unknown>)?.candidates as
+      | Array<Record<string, unknown>>
+      | undefined;
+    const candidate = candidates?.[0];
+    const grounding = candidate?.groundingMetadata as
+      | Record<string, unknown>
+      | undefined;
+
+    const groundingChunks = grounding?.groundingChunks as
+      | Array<Record<string, unknown>>
+      | undefined;
+    const groundingSupports = grounding?.groundingSupports as
+      | Array<Record<string, unknown>>
+      | undefined;
+
+    if (groundingChunks && groundingSupports) {
+      groundingSupports.forEach((support: Record<string, unknown>) => {
+        const chunkIndices =
+          (support.groundingChunkIndices as number[]) ?? [];
+        const segment = support.segment as
+          | Record<string, unknown>
+          | undefined;
+        const chunkText = (segment?.text as string) ?? "";
+
+        for (const chunkIdx of chunkIndices) {
+          const chunk = groundingChunks[chunkIdx];
+          const retrieved = chunk?.retrievedContext as
+            | Record<string, unknown>
+            | undefined;
+          if (retrieved) {
+            citations.push({
+              index: citations.length + 1,
+              sourceId: (retrieved.uri as string) ?? "",
+              sourceName:
+                (retrieved.title as string) ?? `Source ${chunkIdx + 1}`,
+              chunkText,
+            });
+          }
+        }
+      });
+    }
+  } catch {
+    // Grounding metadata may not be available
+  }
+
+  if (citations.length > 0) {
+    yield { type: "citations", citations };
+  }
+
+  yield { type: "done" };
 }

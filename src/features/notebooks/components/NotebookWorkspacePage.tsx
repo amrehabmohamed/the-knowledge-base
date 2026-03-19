@@ -1,14 +1,17 @@
 import { useParams, useNavigate, Navigate } from "react-router-dom";
-import { ArrowLeft, MessageSquare } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Loader } from "@/components/ui/loader";
 import { useNotebook } from "../hooks/useNotebook";
+import { useSources } from "@/features/sources/hooks/useSources";
 import { SourcePanel } from "@/features/sources/components/SourcePanel";
+import { ChatPanel } from "@/features/chat/components/ChatPanel";
 import { useAuthContext } from "@/features/auth";
 
 export function NotebookWorkspacePage() {
   const { notebookId } = useParams<{ notebookId: string }>();
   const { notebook, loading, error } = useNotebook(notebookId);
+  const { sources, loading: sourcesLoading } = useSources(notebookId ?? "");
   const { user } = useAuthContext();
   const navigate = useNavigate();
 
@@ -40,20 +43,16 @@ export function NotebookWorkspacePage() {
       <div className="flex flex-1 overflow-hidden">
         {/* Source Panel */}
         <div className="w-[350px] shrink-0 border-r overflow-y-auto">
-          <SourcePanel notebookId={notebookId!} userId={user!.uid} />
+          <SourcePanel
+            notebookId={notebookId!}
+            userId={user!.uid}
+            sources={sources}
+            loading={sourcesLoading}
+          />
         </div>
 
-        {/* Chat Area (placeholder for Phase 1B) */}
-        <div className="flex flex-1 flex-col items-center justify-center px-8">
-          <MessageSquare className="mb-4 h-12 w-12 text-muted-foreground/30" />
-          <h3 className="font-heading text-lg font-medium text-muted-foreground">
-            Chat coming soon
-          </h3>
-          <p className="font-body mt-1 max-w-sm text-center text-sm text-muted-foreground/70">
-            Add sources to your notebook first. Once you have sources ready,
-            you'll be able to ask questions and get cited answers.
-          </p>
-        </div>
+        {/* Chat Panel */}
+        <ChatPanel notebookId={notebookId!} sources={sources} />
       </div>
     </div>
   );

@@ -102,7 +102,27 @@ export function SourceCard({ source, onRetry, onDelete }: SourceCardProps) {
               {createdAt}
             </span>
           )}
+
+          {source.status === "ready" && source.processingMs != null && (
+            <span className="text-[10px] text-muted-foreground">
+              {(source.processingMs / 1000).toFixed(1)}s
+            </span>
+          )}
         </div>
+
+        {source.tags && source.tags.length > 0 && (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {source.tags.map((tag, i) => (
+              <Badge
+                key={i}
+                variant="secondary"
+                className="text-[9px] px-1.5 py-0 bg-muted text-muted-foreground"
+              >
+                {tag.key}: {tag.value}
+              </Badge>
+            ))}
+          </div>
+        )}
 
         {source.status === "failed" && source.failureReason && (
           <p className="mt-1 text-[11px] text-destructive">
@@ -123,14 +143,16 @@ export function SourceCard({ source, onRetry, onDelete }: SourceCardProps) {
         )}
       </div>
 
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        className="shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"
-        onClick={onDelete}
-      >
-        <Trash2 className="h-3.5 w-3.5" />
-      </Button>
+      {source.status !== "uploading" && source.status !== "fetching" && (
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"
+          onClick={onDelete}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+      )}
     </div>
   );
 }

@@ -28,6 +28,8 @@ export interface Source {
   status: SourceStatus;
   failureReason: string | null;
   tags: SourceTag[];
+  startedAt: number | null;
+  processingMs: number | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }

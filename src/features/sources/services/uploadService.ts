@@ -102,7 +102,8 @@ export async function uploadFile(
   file: File,
   notebookId: string,
   userId: string,
-  callbacks: UploadCallbacks
+  callbacks: UploadCallbacks,
+  tags: Array<{ key: string; value: string }> = []
 ): Promise<string> {
   const ext = getFileExtension(file.name);
   const mimeType = SUPPORTED_FILE_TYPES[ext] || "application/octet-stream";
@@ -125,7 +126,9 @@ export async function uploadFile(
     sizeBytes: file.size,
     status: "uploading",
     failureReason: null,
-    tags: [],
+    tags,
+    startedAt: Date.now(),
+    processingMs: null,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
@@ -183,11 +186,12 @@ export async function uploadBatch(
   files: File[],
   notebookId: string,
   userId: string,
-  callbacks: UploadCallbacks
+  callbacks: UploadCallbacks,
+  tags: Array<{ key: string; value: string }> = []
 ): Promise<void> {
   for (const file of files) {
     try {
-      await uploadFile(file, notebookId, userId, callbacks);
+      await uploadFile(file, notebookId, userId, callbacks, tags);
     } catch {
       // Individual failures don't block the rest of the batch
       continue;

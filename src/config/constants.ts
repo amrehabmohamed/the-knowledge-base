@@ -80,3 +80,24 @@ export const SOURCE_STATUS_CONFIG: Record<
     color: "bg-red-100 text-red-700",
   },
 };
+
+/**
+ * Available Gemini models for chat.
+ */
+export const GEMINI_MODELS = [
+  { id: "gemini-3-flash", label: "Gemini 3 Flash" },
+  { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro" },
+  { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+  { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+] as const;
+
+export const DEFAULT_MODEL_ID = "gemini-3-flash";
+
+/**
+ * Cloud Functions base URL.
+ */
+const PROJECT_ID = import.meta.env.VITE_FIREBASE_PROJECT_ID;
+export const FUNCTIONS_BASE_URL = `https://us-central1-${PROJECT_ID}.cloudfunctions.net`;
+export const CHAT_FUNCTION_URL = `${FUNCTIONS_BASE_URL}/chat`;
+export const HEALTH_FUNCTION_URL = `${FUNCTIONS_BASE_URL}/health`;
+export const PING_FUNCTION_URL = `${FUNCTIONS_BASE_URL}/ping`;
