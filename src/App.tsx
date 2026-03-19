@@ -1,15 +1,30 @@
+import { Routes, Route, Navigate } from "react-router-dom";
+import { LoginPage, ProtectedRoute } from "@/features/auth";
+import { NotebookListPage } from "@/features/notebooks/components/NotebookListPage";
+import { NotebookWorkspacePage } from "@/features/notebooks/components/NotebookWorkspacePage";
+
 function App() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="font-heading text-4xl font-medium text-foreground">
-          Knowledge Base
-        </h1>
-        <p className="font-body mt-2 text-muted-foreground">
-          Your personal knowledge management tool
-        </p>
-      </div>
-    </div>
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route
+        path="/"
+        element={
+          <ProtectedRoute>
+            <NotebookListPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/notebooks/:notebookId"
+        element={
+          <ProtectedRoute>
+            <NotebookWorkspacePage />
+          </ProtectedRoute>
+        }
+      />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }
 
