@@ -43,6 +43,10 @@ export async function uploadToGeminiStore(
     }
   }
 
+  console.log(`[UPLOAD] storageRef=${storageRef}, displayName=${displayName}`);
+  console.log(`[UPLOAD] storeId=${storeId}`);
+  console.log(`[UPLOAD] customMetadata=${JSON.stringify(customMetadata)}`);
+
   // Upload directly to the FileSearch Store (single step)
   const uint8 = new Uint8Array(buffer);
   const blob = new Blob([uint8], { type: mimeType });
@@ -60,11 +64,13 @@ export async function uploadToGeminiStore(
   const response = operation.response as Record<string, unknown> | undefined;
   const documentName = (response?.documentName as string) ?? "";
 
+  console.log(`[UPLOAD] operation response: ${JSON.stringify(response)}`);
+
   if (!documentName) {
-    console.warn("Upload succeeded but no document name returned");
+    console.warn("[UPLOAD] WARNING: Upload succeeded but no document name returned");
   }
 
-  console.log(`File uploaded to store: ${documentName}`);
+  console.log(`[UPLOAD] SUCCESS: ${documentName}`);
   return documentName || storeId;
 }
 
@@ -78,17 +84,24 @@ export async function deleteFromGeminiStore(
 
   try {
     if (geminiDocId.startsWith("fileSearchStores/") && geminiDocId.includes("/documents/")) {
-      // Store document — delete from store
-      await (client.fileSearchStores.documents as any).delete({
+      // Store document — delete from store (force deletes chunks too)
+      await client.fileSearchStores.documents.delete({
         name: geminiDocId,
-        force: true,
+        config: { force: true },
       });
     } else {
       // Legacy file reference — delete from Files API
       await client.files.delete({ name: geminiDocId });
     }
   } catch (err: unknown) {
-    console.warn(`Failed to delete ${geminiDocId}:`, err);
+    // Treat 404 as success — document is already gone
+    const status = (err as { status?: number }).status;
+    if (status === 404) {
+      console.log(`[DELETE] Already deleted: ${geminiDocId}`);
+      return;
+    }
+    console.error(`[DELETE] Failed to delete ${geminiDocId}:`, err);
+    throw err;
   }
 }
 
@@ -106,8 +119,7 @@ export type ChatChunk =
 
 /**
  * Streams a chat response from Gemini using FileSearch Store for grounding.
- * Queries the full store — metadata filtering is not yet reliable in Gemini API.
- * Custom metadata (notebookId) is stored on documents for future filtering.
+ * Filters by notebookId metadata to ensure notebook-level data isolation.
  */
 export async function* queryWithFileSearch(
   query: string,
@@ -118,6 +130,15 @@ export async function* queryWithFileSearch(
   const client = getClient();
   const storeId = getGeminiStoreId();
   const apiModel = GEMINI_MODELS[modelId] || "gemini-2.5-flash";
+  // IMPORTANT: Gemini metadataFilter does NOT support camelCase keys — use snake_case
+  const metadataFilter = `notebook_id = "${notebookId}"`;
+
+  console.log(`[CHAT] ---- New query ----`);
+  console.log(`[CHAT] notebookId=${notebookId}, model=${apiModel}`);
+  console.log(`[CHAT] storeId=${storeId}`);
+  console.log(`[CHAT] metadataFilter=${metadataFilter}`);
+  console.log(`[CHAT] query="${query}"`);
+  console.log(`[CHAT] history length=${history.length}`);
 
   // Build conversation history
   const contents: Content[] = [];
@@ -132,43 +153,67 @@ export async function* queryWithFileSearch(
     parts: [{ text: query }],
   });
 
-  // Query with FileSearch tool grounded in the store
-  // TODO: Add metadataFilter when Gemini API supports it reliably
+  // Filter by notebook_id for tenant isolation
+  const toolConfig = {
+    fileSearch: {
+      fileSearchStoreNames: [storeId],
+      metadataFilter,
+    },
+  };
+  console.log(`[CHAT] tools config: ${JSON.stringify(toolConfig)}`);
+
   const response = await client.models.generateContentStream({
     model: apiModel,
     contents,
     config: {
       systemInstruction: SYSTEM_PROMPT,
-      tools: [
-        {
-          fileSearch: {
-            fileSearchStoreNames: [storeId],
-          },
-        },
-      ],
+      tools: [toolConfig],
     },
   });
 
   let lastChunk: Record<string, unknown> | null = null;
+  let tokenCount = 0;
 
   for await (const chunk of response) {
     const text = chunk.text ?? "";
     if (text) {
+      tokenCount++;
       yield { type: "token", text };
     }
     lastChunk = chunk as unknown as Record<string, unknown>;
   }
 
-  // Extract citations from grounding metadata
-  const citations: ChatCitation[] = [];
+  console.log(`[CHAT] Stream complete. Tokens yielded: ${tokenCount}`);
+
+  // Log raw last chunk for debugging
   try {
     const candidates = (lastChunk as Record<string, unknown>)?.candidates as
       | Array<Record<string, unknown>>
       | undefined;
     const candidate = candidates?.[0];
+
+    // Log all parts to see executableCode and other non-text parts
+    const content = candidate?.content as Record<string, unknown> | undefined;
+    const parts = content?.parts as Array<Record<string, unknown>> | undefined;
+    if (parts) {
+      console.log(`[CHAT] Response parts count: ${parts.length}`);
+      for (let i = 0; i < parts.length; i++) {
+        const partKeys = Object.keys(parts[i]);
+        console.log(`[CHAT] Part ${i} keys: ${partKeys.join(", ")}`);
+        if (parts[i].executableCode) {
+          console.log(`[CHAT] Part ${i} executableCode: ${JSON.stringify(parts[i].executableCode)}`);
+        }
+      }
+    }
+
     const grounding = candidate?.groundingMetadata as
       | Record<string, unknown>
       | undefined;
+
+    console.log(`[CHAT] groundingMetadata present: ${!!grounding}`);
+    if (grounding) {
+      console.log(`[CHAT] groundingMetadata keys: ${Object.keys(grounding).join(", ")}`);
+    }
 
     const groundingChunks = grounding?.groundingChunks as
       | Array<Record<string, unknown>>
@@ -176,6 +221,12 @@ export async function* queryWithFileSearch(
     const groundingSupports = grounding?.groundingSupports as
       | Array<Record<string, unknown>>
       | undefined;
+
+    console.log(`[CHAT] groundingChunks: ${groundingChunks?.length ?? 0}`);
+    console.log(`[CHAT] groundingSupports: ${groundingSupports?.length ?? 0}`);
+
+    // Extract citations from grounding metadata
+    const citations: ChatCitation[] = [];
 
     if (groundingChunks && groundingSupports) {
       groundingSupports.forEach((support: Record<string, unknown>) => {
@@ -192,6 +243,7 @@ export async function* queryWithFileSearch(
             | Record<string, unknown>
             | undefined;
           if (retrieved) {
+            console.log(`[CHAT] Citation found: uri=${retrieved.uri}, title=${retrieved.title}`);
             citations.push({
               index: citations.length + 1,
               sourceId: (retrieved.uri as string) ?? "",
@@ -203,12 +255,14 @@ export async function* queryWithFileSearch(
         }
       });
     }
-  } catch {
-    // Grounding metadata may not be available
-  }
 
-  if (citations.length > 0) {
-    yield { type: "citations", citations };
+    console.log(`[CHAT] Total citations: ${citations.length}`);
+
+    if (citations.length > 0) {
+      yield { type: "citations", citations };
+    }
+  } catch (err) {
+    console.error(`[CHAT] Error extracting citations:`, err);
   }
 
   yield { type: "done" };

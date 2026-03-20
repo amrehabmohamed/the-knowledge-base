@@ -65,11 +65,32 @@ export function useFileUpload(notebookId: string, userId: string) {
   );
 
   const removeSource = useCallback(
-    async (sourceId: string, storageRef: string | null) => {
+    async (sourceId: string) => {
       try {
-        await deleteSource(notebookId, sourceId, storageRef);
+        await deleteSource(notebookId, sourceId);
       } catch (err) {
         console.error("Failed to delete source:", err);
+      }
+    },
+    [notebookId]
+  );
+
+  const [removingAll, setRemovingAll] = useState(false);
+
+  const removeAllSources = useCallback(
+    async (sources: Array<{ id: string; status: string }>) => {
+      setRemovingAll(true);
+      try {
+        const deletable = sources.filter(
+          (s) => s.status === "ready" || s.status === "failed"
+        );
+        await Promise.all(
+          deletable.map((s) => deleteSource(notebookId, s.id))
+        );
+      } catch (err) {
+        console.error("Failed to delete all sources:", err);
+      } finally {
+        setRemovingAll(false);
       }
     },
     [notebookId]
@@ -81,5 +102,7 @@ export function useFileUpload(notebookId: string, userId: string) {
     startUpload,
     retrySource,
     removeSource,
+    removeAllSources,
+    removingAll,
   };
 }

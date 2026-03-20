@@ -50,8 +50,9 @@ export const onSourceStatusChange = onDocumentUpdated(
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-      // Build metadata from notebookId + user tags
-      const metadata: Record<string, string> = { notebookId };
+      // Build metadata from notebook_id + user tags
+      // IMPORTANT: Gemini metadataFilter does NOT support camelCase keys — use snake_case
+      const metadata: Record<string, string> = { notebook_id: notebookId };
       const sourceTags = (after.tags as Array<{ key: string; value: string }>) ?? [];
       for (const tag of sourceTags) {
         if (tag.key && tag.value) {

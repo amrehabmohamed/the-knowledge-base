@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Upload, Link, FileText } from "lucide-react";
+import { Upload, Link, FileText, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Loader } from "@/components/ui/loader";
 import { useFileUpload } from "../hooks/useFileUpload";
@@ -28,6 +28,8 @@ export function SourcePanel({
     startUpload,
     removeSource,
     retrySource,
+    removeAllSources,
+    removingAll,
   } = useFileUpload(notebookId, userId);
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [showUploadDialog, setShowUploadDialog] = useState(false);
@@ -54,6 +56,18 @@ export function SourcePanel({
           )}
         </div>
         <div className="flex items-center gap-1">
+          {sources.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => removeAllSources(sources)}
+              disabled={removingAll || uploading}
+              className="gap-1 text-xs text-destructive hover:text-destructive"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              {removingAll ? "Removing..." : "Remove All"}
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -108,7 +122,7 @@ export function SourcePanel({
                 key={source.id}
                 source={source}
                 onRetry={() => retrySource(source.id)}
-                onDelete={() => removeSource(source.id, source.storageRef)}
+                onDelete={() => removeSource(source.id)}
               />
             ))}
           </div>

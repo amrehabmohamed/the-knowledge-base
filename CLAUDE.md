@@ -70,7 +70,9 @@ firebase deploy --only firestore:rules,firestore:indexes  # Deploy rules + index
 - Gemini SDK: use `@google/genai` (not `@google/generative-ai` which lacks Files API)
 - Upload pipeline: frontend uploads to Cloud Storage → Firestore trigger → `uploadToFileSearchStore` (single-step store upload with metadata)
 - Chat streaming: SSE via Cloud Functions v2 `onRequest` (not `onCall` — it doesn't support streaming)
-- Gemini FileSearch `metadataFilter` is broken at API level (silently returns no results) — metadata stored for future use but filtering not enabled
+- Gemini FileSearch `metadataFilter` is active — uses AIP-160 filter syntax (`notebook_id = "<id>"`) for notebook-level data isolation
+- CRITICAL: Gemini metadataFilter does NOT support camelCase keys (silently returns no results) — always use snake_case for custom metadata keys
+- Source tags from users should also use snake_case keys to be filterable
 - Gemini model IDs: use preview/stable strings (e.g. `gemini-3-flash-preview`, `gemini-2.5-flash`) — check for deprecations
 - Source tags: stored as `customMetadata` on Gemini store documents alongside `notebookId`
 

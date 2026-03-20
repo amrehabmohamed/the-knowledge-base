@@ -2,16 +2,15 @@ import {
   doc,
   setDoc,
   updateDoc,
-  deleteDoc,
   serverTimestamp,
 } from "firebase/firestore";
 import {
   ref,
   uploadBytesResumable,
-  deleteObject,
 } from "firebase/storage";
 import { storage } from "@/lib/firebase";
 import { getSourcesCollection, getSourceRef } from "@/lib/firestore";
+import { callFunction } from "@/lib/api";
 import {
   SUPPORTED_FILE_TYPES,
   MAX_FILE_SIZE_BYTES,
@@ -200,23 +199,12 @@ export async function uploadBatch(
 }
 
 /**
- * Delete a source: remove from Storage and Firestore.
+ * Delete a source: calls the deleteSource cloud function which handles
+ * Gemini store cleanup, Cloud Storage deletion, and Firestore deletion.
  */
 export async function deleteSource(
   notebookId: string,
-  sourceId: string,
-  storageRef: string | null
+  sourceId: string
 ): Promise<void> {
-  // Delete from Cloud Storage if there's a file
-  if (storageRef) {
-    try {
-      const fileRef = ref(storage, storageRef);
-      await deleteObject(fileRef);
-    } catch {
-      // File may not exist (e.g. upload never completed)
-    }
-  }
-
-  // Delete from Firestore
-  await deleteDoc(getSourceRef(notebookId, sourceId));
+  await callFunction("deleteSource", { notebookId, sourceId });
 }
