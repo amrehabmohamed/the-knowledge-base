@@ -44,6 +44,7 @@ export function ChatPanel({ notebookId, sources }: ChatPanelProps) {
           onModelChange={updateModel}
           onReset={resetSession}
           hasMessages={messages.length > 0}
+          totalTokens={session.totalTokens}
         />
       )}
 

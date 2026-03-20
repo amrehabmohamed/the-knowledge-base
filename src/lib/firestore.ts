@@ -1,12 +1,15 @@
 import {
   collection,
+  collectionGroup,
   doc,
   query,
   where,
   orderBy,
   limit,
+  startAfter,
   type CollectionReference,
   type DocumentReference,
+  type DocumentSnapshot,
   type Query,
 } from "firebase/firestore";
 import { db } from "./firebase";
@@ -107,4 +110,27 @@ export function toSession(id: string, data: Record<string, unknown>): Session {
 
 export function toMessage(id: string, data: Record<string, unknown>): Message {
   return { id, ...data } as Message;
+}
+
+// Archive helpers
+export function getArchivedSessionsQuery(
+  pageSize = 20,
+  afterDoc?: DocumentSnapshot
+): Query {
+  const base = collectionGroup(db, "sessions");
+  if (afterDoc) {
+    return query(
+      base,
+      where("status", "==", "archived"),
+      orderBy("archivedAt", "desc"),
+      startAfter(afterDoc),
+      limit(pageSize)
+    );
+  }
+  return query(
+    base,
+    where("status", "==", "archived"),
+    orderBy("archivedAt", "desc"),
+    limit(pageSize)
+  );
 }

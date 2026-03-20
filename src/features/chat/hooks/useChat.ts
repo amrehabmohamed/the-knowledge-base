@@ -1,9 +1,10 @@
 import { useState, useCallback, useRef } from "react";
-import { addDoc, serverTimestamp } from "firebase/firestore";
-import { getMessagesCollection } from "@/lib/firestore";
+import { addDoc, updateDoc, increment, serverTimestamp } from "firebase/firestore";
+import { getMessagesCollection, getSessionRef } from "@/lib/firestore";
 import { streamChat } from "@/lib/streaming";
 import { useSession } from "./useSession";
 import { useMessages } from "./useMessages";
+import { useSystemStatusContext } from "@/features/settings";
 import type { Source } from "@/types/source";
 import type { Citation } from "@/types/session";
 
@@ -14,6 +15,7 @@ export function useChat(notebookId: string, sources: Source[]) {
     notebookId,
     session?.id
   );
+  const { markReady } = useSystemStatusContext();
 
   const [streaming, setStreaming] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
@@ -52,6 +54,10 @@ export function useChat(notebookId: string, sources: Source[]) {
         metrics: null,
         createdAt: serverTimestamp(),
       });
+      await updateDoc(getSessionRef(notebookId, session.id), {
+        messageCount: increment(1),
+        updatedAt: serverTimestamp(),
+      });
 
       // Build history from existing messages
       const history = messages
@@ -75,6 +81,7 @@ export function useChat(notebookId: string, sources: Source[]) {
             query,
             modelId: session.modelId,
             history,
+            sessionId: session.id,
           },
           {
             onToken: (text) => {
@@ -120,6 +127,12 @@ export function useChat(notebookId: string, sources: Source[]) {
             },
             createdAt: serverTimestamp(),
           });
+          await updateDoc(getSessionRef(notebookId, session.id), {
+            messageCount: increment(1),
+            updatedAt: serverTimestamp(),
+          });
+
+          markReady();
         }
       } catch (err: unknown) {
         if (err instanceof Error && err.name !== "AbortError") {

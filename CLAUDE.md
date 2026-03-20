@@ -20,7 +20,7 @@ A single-user knowledge management tool inspired by NotebookLM. Upload documents
   - `src/features/` — Feature modules (auth, notebooks, sources, chat, settings)
   - `src/components/ui/` — shadcn/ui + prompt-kit components
   - `src/lib/firebase.ts` — Firebase SDK initialization
-  - `src/lib/utils.ts` — shadcn utility (cn function)
+  - `src/lib/utils.ts` — shadcn utility (cn function) + RTL text detection (`getTextDir`)
   - `src/lib/firestore.ts` — Typed Firestore collection/document helpers
   - `src/lib/formatters.ts` — Date, file size, text truncation formatters
   - `src/lib/api.ts` — Cloud Functions callable helper
@@ -32,6 +32,7 @@ A single-user knowledge management tool inspired by NotebookLM. Upload documents
   - `functions/src/middleware/` — Auth token validation
   - `functions/src/config.ts` — Environment variable access
   - `functions/src/types/` — Backend type definitions
+- `prompt-templates/` — Reusable system prompt templates (future feature)
 - `firestore.rules` — Firestore security rules
 - `storage.rules` — Cloud Storage security rules
 
@@ -75,13 +76,18 @@ firebase deploy --only firestore:rules,firestore:indexes  # Deploy rules + index
 - Source tags from users should also use snake_case keys to be filterable
 - Gemini model IDs: use preview/stable strings (e.g. `gemini-3-flash-preview`, `gemini-2.5-flash`) — check for deprecations
 - Source tags: stored as `customMetadata` on Gemini store documents alongside `notebookId`
+- RTL support: `getTextDir()` in `src/lib/utils.ts` auto-detects Arabic/Hebrew text and sets `dir="rtl"` on message content
+- Chat layout: user messages are right-aligned dark bubbles, AI messages are left-aligned with bot icon — conversational style
+- Per-notebook system prompt: stored as `systemPrompt` field on notebook doc, appended to default system prompt server-side
+- Token counting: server-side via Gemini `usageMetadata.totalTokenCount`, stored on session via Firestore `increment()`
+- Summarization: triggers at 500K tokens, uses `gemini-2.5-flash`, 60s cooldown on failure
 
 ## Build Status
 
 - **Phase 0**: Complete (scaffold)
 - **Phase 1A**: Complete (auth, notebooks, file upload, source status, security rules)
 - **Phase 1B**: Complete (URL ingestion, chat with streaming/citations, model selection, session reset, upload dialog with tags)
-- **Phase 1C**: Not started (summarization, archive, system status/warm-up, deployment)
+- **Phase 1C**: Complete (summarization, archive, system status/warm-up, per-notebook system prompt, token counting, RTL support, chat layout redesign, Netlify deployment)
 
 ## Full Requirements
 

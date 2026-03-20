@@ -115,7 +115,7 @@ export interface ChatCitation {
 export type ChatChunk =
   | { type: "token"; text: string }
   | { type: "citations"; citations: ChatCitation[] }
-  | { type: "done" };
+  | { type: "done"; totalTokens: number };
 
 /**
  * Streams a chat response from Gemini using FileSearch Store for grounding.
@@ -125,7 +125,8 @@ export async function* queryWithFileSearch(
   query: string,
   history: Array<{ role: string; content: string }>,
   notebookId: string,
-  modelId: string
+  modelId: string,
+  customSystemPrompt?: string
 ): AsyncGenerator<ChatChunk> {
   const client = getClient();
   const storeId = getGeminiStoreId();
@@ -166,24 +167,37 @@ export async function* queryWithFileSearch(
     model: apiModel,
     contents,
     config: {
-      systemInstruction: SYSTEM_PROMPT,
+      systemInstruction: customSystemPrompt
+        ? `${SYSTEM_PROMPT}\n\n${customSystemPrompt}`
+        : SYSTEM_PROMPT,
       tools: [toolConfig],
     },
   });
 
   let lastChunk: Record<string, unknown> | null = null;
-  let tokenCount = 0;
+  let chunkCount = 0;
 
   for await (const chunk of response) {
     const text = chunk.text ?? "";
     if (text) {
-      tokenCount++;
+      chunkCount++;
       yield { type: "token", text };
     }
     lastChunk = chunk as unknown as Record<string, unknown>;
   }
 
-  console.log(`[CHAT] Stream complete. Tokens yielded: ${tokenCount}`);
+  // Extract real token usage from Gemini's usageMetadata
+  const usageMetadata = lastChunk?.usageMetadata as
+    | Record<string, unknown>
+    | undefined;
+  const totalTokens =
+    (usageMetadata?.totalTokenCount as number) ?? 0;
+  const promptTokens =
+    (usageMetadata?.promptTokenCount as number) ?? 0;
+  const candidateTokens =
+    (usageMetadata?.candidatesTokenCount as number) ?? 0;
+
+  console.log(`[CHAT] Stream complete. Chunks: ${chunkCount}, Tokens: prompt=${promptTokens} candidate=${candidateTokens} total=${totalTokens}`);
 
   // Log raw last chunk for debugging
   try {
@@ -265,5 +279,5 @@ export async function* queryWithFileSearch(
     console.error(`[CHAT] Error extracting citations:`, err);
   }
 
-  yield { type: "done" };
+  yield { type: "done", totalTokens };
 }

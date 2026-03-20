@@ -8,18 +8,23 @@ import {
   queryWithFileSearch,
 } from "./services/gemini";
 import { extractUrl } from "./services/jina";
+import { summarizeSession } from "./services/summarize";
 import { validateAuth } from "./middleware/auth";
+import {
+  SUMMARIZATION_THRESHOLD,
+  SUMMARIZATION_COOLDOWN_MS,
+} from "./config";
 import type { Source } from "./types";
 
 admin.initializeApp();
 
 // Health check endpoint
-export const health = onRequest((_req, res) => {
+export const health = onRequest({ cors: true }, (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
 // Ping endpoint for warm-up
-export const ping = onRequest((_req, res) => {
+export const ping = onRequest({ cors: true }, (_req, res) => {
   res.json({ status: "warm" });
 });
 
@@ -341,6 +346,12 @@ export const deleteSource = onCall(async (request) => {
 export const chat = onRequest(
   { cors: true, timeoutSeconds: 300 },
   async (req, res) => {
+    // Warmup ping — skip auth and processing
+    if (req.method === "GET" || req.body?.warmup === true) {
+      res.json({ status: "warm" });
+      return;
+    }
+
     // Validate auth
     let decodedToken;
     try {
@@ -355,7 +366,7 @@ export const chat = onRequest(
       return;
     }
 
-    const { notebookId, query, modelId, history } = req.body;
+    const { notebookId, query, modelId, history, sessionId } = req.body;
 
     if (!notebookId || !query) {
       res.status(400).json({ error: "Missing required fields." });
@@ -365,12 +376,109 @@ export const chat = onRequest(
     // Verify notebook ownership
     const db = admin.firestore();
     const notebookSnap = await db.doc(`notebooks/${notebookId}`).get();
-    if (
-      !notebookSnap.exists ||
-      notebookSnap.data()?.ownerId !== decodedToken.uid
-    ) {
+    const notebookData = notebookSnap.data();
+    if (!notebookSnap.exists || notebookData?.ownerId !== decodedToken.uid) {
       res.status(403).json({ error: "Access denied." });
       return;
+    }
+
+    // Per-notebook custom system prompt (appended to default)
+    const customSystemPrompt = (notebookData?.systemPrompt as string) || undefined;
+
+    // --- Summarization check ---
+    let chatHistory = history ?? [];
+
+    if (sessionId) {
+      const sessionRef = db.doc(
+        `notebooks/${notebookId}/sessions/${sessionId}`
+      );
+      const sessionSnap = await sessionRef.get();
+      const sessionData = sessionSnap.data();
+
+      if (
+        sessionData &&
+        sessionData.totalTokens >= SUMMARIZATION_THRESHOLD
+      ) {
+        const lastFailed = sessionData.lastSummarizationFailedAt?.toMillis?.() ?? 0;
+        const cooldownExpired =
+          Date.now() - lastFailed > SUMMARIZATION_COOLDOWN_MS;
+
+        if (cooldownExpired) {
+          try {
+            // Read messages from Firestore for reliable summarization
+            const messagesSnap = await db
+              .collection(
+                `notebooks/${notebookId}/sessions/${sessionId}/messages`
+              )
+              .orderBy("createdAt", "asc")
+              .get();
+
+            const allMessages = messagesSnap.docs
+              .map((d) => d.data())
+              .filter(
+                (m) =>
+                  (m.role === "user" || m.role === "assistant") &&
+                  !m.superseded
+              )
+              .map((m) => ({ role: m.role as string, content: m.content as string }));
+
+            const { summary, tokenCount: sumTokens } =
+              await summarizeSession(allMessages);
+
+            // Mark previous summaries as superseded
+            const prevSummaries = messagesSnap.docs.filter(
+              (d) => d.data().role === "summary" && !d.data().superseded
+            );
+            const batch = db.batch();
+            for (const s of prevSummaries) {
+              batch.update(s.ref, { superseded: true });
+            }
+
+            // Write new summary message
+            batch.set(
+              db
+                .collection(
+                  `notebooks/${notebookId}/sessions/${sessionId}/messages`
+                )
+                .doc(),
+              {
+                sessionId,
+                role: "summary",
+                content: summary,
+                citations: null,
+                tokenCount: sumTokens,
+                modelId: "gemini-2.5-flash",
+                agentType: "summarizer",
+                metrics: null,
+                superseded: false,
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+              }
+            );
+
+            // Update session token count
+            batch.update(sessionRef, {
+              totalTokens: admin.firestore.FieldValue.increment(sumTokens),
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+
+            await batch.commit();
+
+            // Replace history with summary for the query
+            chatHistory = [{ role: "assistant", content: summary }];
+
+            console.log(
+              `[SUMMARIZE] Session ${sessionId} summarized (${sumTokens} tokens)`
+            );
+          } catch (err) {
+            console.error("[SUMMARIZE] Failed:", err);
+            await sessionRef.update({
+              lastSummarizationFailedAt:
+                admin.firestore.FieldValue.serverTimestamp(),
+            });
+            // Continue with original history
+          }
+        }
+      }
     }
 
     // Set SSE headers
@@ -381,14 +489,14 @@ export const chat = onRequest(
 
     const startTime = Date.now();
     let firstTokenTime: number | null = null;
-    let tokenCount = 0;
 
     try {
       const stream = queryWithFileSearch(
         query,
-        history ?? [],
+        chatHistory,
         notebookId,
-        modelId ?? "gemini-3-flash"
+        modelId ?? "gemini-3-flash",
+        customSystemPrompt
       );
 
       for await (const chunk of stream) {
@@ -396,7 +504,6 @@ export const chat = onRequest(
           if (firstTokenTime === null) {
             firstTokenTime = Date.now();
           }
-          tokenCount++;
           res.write(
             `event: token\ndata: ${JSON.stringify({ text: chunk.text })}\n\n`
           );
@@ -409,10 +516,23 @@ export const chat = onRequest(
           const ttftMs = firstTokenTime
             ? firstTokenTime - startTime
             : totalMs;
+          const tokenCount = chunk.totalTokens;
           res.write(
             `event: metrics\ndata: ${JSON.stringify({ ttftMs, totalMs, tokenCount })}\n\n`
           );
           res.write(`event: done\ndata: {}\n\n`);
+
+          // Update session totalTokens server-side with real Gemini token count
+          if (sessionId && tokenCount > 0) {
+            db.doc(`notebooks/${notebookId}/sessions/${sessionId}`)
+              .update({
+                totalTokens: admin.firestore.FieldValue.increment(tokenCount),
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              })
+              .catch((err: unknown) =>
+                console.error("[CHAT] Failed to update totalTokens:", err)
+              );
+          }
         }
       }
     } catch (err: unknown) {

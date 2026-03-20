@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ArrowUp, Square } from "lucide-react";
+import { getTextDir } from "@/lib/utils";
 import {
   PromptInput,
   PromptInputTextarea,
@@ -34,6 +35,7 @@ export function ChatInput({ onSend, disabled, streaming }: ChatInputProps) {
         maxHeight={160}
       >
         <PromptInputTextarea
+          dir={getTextDir(value) === "rtl" ? "rtl" : undefined}
           placeholder={
             disabled
               ? "Add sources to start chatting..."

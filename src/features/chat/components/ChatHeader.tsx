@@ -22,6 +22,13 @@ interface ChatHeaderProps {
   onModelChange: (modelId: string) => void;
   onReset: () => void;
   hasMessages: boolean;
+  totalTokens?: number;
+}
+
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M tokens`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K tokens`;
+  return `${tokens} tokens`;
 }
 
 export function ChatHeader({
@@ -29,6 +36,7 @@ export function ChatHeader({
   onModelChange,
   onReset,
   hasMessages,
+  totalTokens = 0,
 }: ChatHeaderProps) {
   const [resetOpen, setResetOpen] = useState(false);
   const currentModel =
@@ -59,15 +67,22 @@ export function ChatHeader({
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => (hasMessages ? setResetOpen(true) : onReset())}
-          className="gap-1.5 text-xs text-muted-foreground"
-        >
+        <div className="flex items-center gap-3">
+          {totalTokens > 0 && (
+            <span className="font-body text-[11px] text-muted-foreground/60">
+              {formatTokenCount(totalTokens)}
+            </span>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => (hasMessages ? setResetOpen(true) : onReset())}
+            className="gap-1.5 text-xs text-muted-foreground"
+          >
           <RotateCcw className="h-3.5 w-3.5" />
           New Chat
         </Button>
+        </div>
       </div>
 
       <Dialog open={resetOpen} onOpenChange={setResetOpen}>

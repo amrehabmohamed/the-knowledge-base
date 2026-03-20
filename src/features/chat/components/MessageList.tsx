@@ -23,10 +23,12 @@ export function MessageList({
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-4">
-      <div className="mx-auto max-w-2xl space-y-6">
-        {messages.map((msg) => (
-          <ChatMessage key={msg.id} message={msg} />
-        ))}
+      <div className="mx-auto max-w-3xl space-y-5">
+        {messages
+          .filter((msg) => !msg.superseded)
+          .map((msg) => (
+            <ChatMessage key={msg.id} message={msg} />
+          ))}
 
         {streaming && (
           <StreamingMessage

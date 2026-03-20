@@ -19,6 +19,7 @@ interface ChatParams {
   query: string;
   modelId: string;
   history: Array<{ role: string; content: string }>;
+  sessionId?: string;
 }
 
 /**

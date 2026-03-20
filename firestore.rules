@@ -39,6 +39,11 @@ service cloud.firestore {
       }
     }
 
+    // Sessions: collection group query for archive (across all notebooks)
+    match /{path=**}/sessions/{sessionId} {
+      allow read: if request.auth != null;
+    }
+
     // Response metrics
     match /response_metrics/{metricId} {
       allow read, write: if request.auth != null;

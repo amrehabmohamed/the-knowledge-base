@@ -5,10 +5,12 @@ export interface Session {
   notebookId: string;
   status: "active" | "archived";
   totalTokens: number;
+  messageCount: number;
   modelId: string;
   createdAt: Timestamp;
   updatedAt: Timestamp;
   archivedAt: Timestamp | null;
+  lastSummarizationFailedAt?: Timestamp | null;
 }
 
 export interface Citation {
@@ -33,5 +35,6 @@ export interface Message {
   modelId: string | null;
   agentType: string;
   metrics: MessageMetrics | null;
+  superseded?: boolean;
   createdAt: Timestamp;
 }

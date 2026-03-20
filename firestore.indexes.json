@@ -7,6 +7,14 @@
         { "fieldPath": "ownerId", "order": "ASCENDING" },
         { "fieldPath": "lastOpenedAt", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "sessions",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "archivedAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

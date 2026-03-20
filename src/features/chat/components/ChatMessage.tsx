@@ -1,5 +1,6 @@
-import { Bot, User } from "lucide-react";
+import { Bot, FileText } from "lucide-react";
 import { Markdown } from "@/components/ui/markdown";
+import { getTextDir } from "@/lib/utils";
 import { CitationMarker } from "./CitationMarker";
 import type { Message, Citation } from "@/types/session";
 
@@ -29,8 +30,10 @@ function renderContentWithCitations(
   // Split content by citation markers [N]
   const parts = content.split(/(\[\d+\])/g);
 
+  const dir = getTextDir(content);
+
   return (
-    <div className="prose prose-sm max-w-none">
+    <div className="prose prose-sm max-w-none" dir={dir}>
       {parts.map((part, i) => {
         const match = part.match(/^\[(\d+)\]$/);
         if (match) {
@@ -53,29 +56,52 @@ function renderContentWithCitations(
 
 export function ChatMessage({ message }: ChatMessageProps) {
   const isUser = message.role === "user";
+  const isSummary = message.role === "summary";
+
+  if (isSummary) {
+    return (
+      <div className="flex gap-3">
+        <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-amber-100">
+          <FileText className="h-3.5 w-3.5 text-amber-700" />
+        </div>
+        <div className="min-w-0 flex-1 space-y-1 rounded-lg border border-amber-200 bg-amber-50 p-3">
+          <p className="font-heading text-xs font-medium text-amber-700">
+            Session Summary
+          </p>
+          <div dir={getTextDir(message.content)}>
+            <Markdown>{message.content}</Markdown>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isUser) {
+    const dir = getTextDir(message.content);
+    return (
+      <div className="flex justify-end">
+        <div
+          className="max-w-[75%] rounded-2xl rounded-br-sm bg-foreground px-4 py-2.5 text-sm text-background"
+          dir={dir}
+        >
+          {message.content}
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className={`flex gap-3 ${isUser ? "" : ""}`}>
-      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted">
-        {isUser ? (
-          <User className="h-4 w-4 text-muted-foreground" />
-        ) : (
-          <Bot className="h-4 w-4 text-muted-foreground" />
-        )}
+    <div className="flex gap-3">
+      <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted mt-0.5">
+        <Bot className="h-3.5 w-3.5 text-muted-foreground" />
       </div>
-
       <div className="min-w-0 flex-1 space-y-1">
-        {isUser ? (
-          <p className="text-sm">{message.content}</p>
-        ) : (
-          renderContentWithCitations(
-            message.content,
-            message.citations ?? []
-          )
+        {renderContentWithCitations(
+          message.content,
+          message.citations ?? []
         )}
-
-        {!isUser && message.metrics && (
-          <p className="text-[11px] text-muted-foreground/60">
+        {message.metrics && (
+          <p className="text-[11px] text-muted-foreground/50">
             {formatMetrics(message.metrics)}
           </p>
         )}
@@ -90,8 +116,8 @@ export function StreamingMessage({
 }: StreamingMessageProps) {
   return (
     <div className="flex gap-3">
-      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted">
-        <Bot className="h-4 w-4 text-muted-foreground" />
+      <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted mt-0.5">
+        <Bot className="h-3.5 w-3.5 text-muted-foreground" />
       </div>
       <div className="min-w-0 flex-1">
         {content ? (
