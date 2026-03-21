@@ -13,12 +13,12 @@ export function NotebookListPage() {
 
   return (
     <AppLayout>
-      <div className="mx-auto max-w-5xl px-6 py-8">
-        <div className="mb-8 flex items-center justify-between">
+      <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
+        <div className="mb-6 flex items-center justify-between sm:mb-8">
           <h2 className="font-heading text-2xl font-semibold">Notebooks</h2>
           <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="mr-1.5 h-4 w-4" />
-            New Notebook
+            <Plus className="h-4 w-4 sm:mr-1.5" />
+            <span className="hidden sm:inline">New Notebook</span>
           </Button>
         </div>
 

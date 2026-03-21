@@ -11,13 +11,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b px-6">
+      <header className="flex h-14 shrink-0 items-center justify-between border-b px-4 sm:px-6">
         <h1 className="font-heading text-lg font-semibold text-foreground">
           Knowledge Base
         </h1>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
           <SystemStatus />
-          <span className="font-body text-sm text-muted-foreground">
+          <span className="hidden font-body text-sm text-muted-foreground sm:inline">
             {user?.email}
           </span>
           <Button
@@ -25,12 +25,12 @@ export function AppLayout({ children }: { children: ReactNode }) {
             size="sm"
             onClick={() => navigate("/settings/archive")}
           >
-            <Archive className="mr-1.5 h-4 w-4" />
-            Archive
+            <Archive className="h-4 w-4 sm:mr-1.5" />
+            <span className="hidden sm:inline">Archive</span>
           </Button>
           <Button variant="ghost" size="sm" onClick={logout}>
-            <LogOut className="mr-1.5 h-4 w-4" />
-            Sign out
+            <LogOut className="h-4 w-4 sm:mr-1.5" />
+            <span className="hidden sm:inline">Sign out</span>
           </Button>
         </div>
       </header>

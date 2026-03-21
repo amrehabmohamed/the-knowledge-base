@@ -147,7 +147,7 @@ export function SourceCard({ source, onRetry, onDelete }: SourceCardProps) {
         <Button
           variant="ghost"
           size="icon-sm"
-          className="shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"
+          className="shrink-0 text-muted-foreground hover:text-destructive"
           onClick={onDelete}
         >
           <Trash2 className="h-3.5 w-3.5" />

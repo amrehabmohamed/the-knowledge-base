@@ -37,7 +37,7 @@ export function ChatPanel({ notebookId, sources }: ChatPanelProps) {
   const hasReadySources = readySources.length > 0;
 
   return (
-    <div className="flex flex-1 flex-col">
+    <div className="flex flex-1 flex-col overflow-hidden">
       {session && (
         <ChatHeader
           modelId={session.modelId}

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useParams, useNavigate, Navigate } from "react-router-dom";
 import { updateDoc, serverTimestamp } from "firebase/firestore";
-import { ArrowLeft, Settings, Eye, Pencil, Globe, MapPin, Link } from "lucide-react";
+import { ArrowLeft, Settings, Eye, Pencil, Globe, MapPin, Link, FileText, MessageSquare } from "lucide-react";
 import { Markdown } from "@/components/ui/markdown";
 import { Button } from "@/components/ui/button";
 import { Loader } from "@/components/ui/loader";
@@ -57,6 +57,7 @@ export function NotebookWorkspacePage() {
   const { user } = useAuthContext();
   const navigate = useNavigate();
 
+  const [activeTab, setActiveTab] = useState<"sources" | "chat">("chat");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("prompt");
   const [promptValue, setPromptValue] = useState("");
@@ -122,7 +123,7 @@ export function NotebookWorkspacePage() {
           className="gap-1.5 text-xs text-muted-foreground"
         >
           <Settings className="h-3.5 w-3.5" />
-          Settings
+          <span className="hidden sm:inline">Settings</span>
         </Button>
       </header>
 
@@ -255,8 +256,12 @@ export function NotebookWorkspacePage() {
 
       {/* Workspace: Source Panel + Chat Area */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Source Panel */}
-        <div className="w-[350px] shrink-0 border-r overflow-y-auto">
+        {/* Source Panel — full screen on mobile when active, fixed sidebar on desktop */}
+        <div
+          className={`${
+            activeTab === "sources" ? "flex" : "hidden"
+          } md:flex w-full flex-col overflow-hidden md:w-[350px] md:shrink-0 md:border-r`}
+        >
           <SourcePanel
             notebookId={notebookId!}
             userId={user!.uid}
@@ -265,8 +270,40 @@ export function NotebookWorkspacePage() {
           />
         </div>
 
-        {/* Chat Panel */}
-        <ChatPanel notebookId={notebookId!} sources={sources} />
+        {/* Chat Panel — full screen on mobile when active, flex on desktop */}
+        <div
+          className={`${
+            activeTab === "chat" ? "flex" : "hidden"
+          } md:flex flex-1 flex-col min-w-0 overflow-hidden`}
+        >
+          <ChatPanel notebookId={notebookId!} sources={sources} />
+        </div>
+      </div>
+
+      {/* Bottom tab bar — mobile only */}
+      <div className="flex md:hidden shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]">
+        <button
+          onClick={() => setActiveTab("sources")}
+          className={`flex flex-1 flex-col items-center gap-1 py-2.5 text-xs font-medium transition-colors ${
+            activeTab === "sources"
+              ? "text-primary"
+              : "text-muted-foreground"
+          }`}
+        >
+          <FileText className="h-5 w-5" />
+          <span>Sources{!sourcesLoading && sources.length > 0 ? ` (${sources.length})` : ""}</span>
+        </button>
+        <button
+          onClick={() => setActiveTab("chat")}
+          className={`flex flex-1 flex-col items-center gap-1 py-2.5 text-xs font-medium transition-colors ${
+            activeTab === "chat"
+              ? "text-primary"
+              : "text-muted-foreground"
+          }`}
+        >
+          <MessageSquare className="h-5 w-5" />
+          <span>Chat</span>
+        </button>
       </div>
     </div>
   );
