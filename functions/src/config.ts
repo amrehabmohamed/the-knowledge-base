@@ -66,7 +66,7 @@ export const CHANNEL_PROMPT_OVERRIDES: Record<string, string> = {
   telegram: "Do NOT include inline citation markers like [1], [2] in your response. Just provide the answer directly. Keep responses concise for mobile reading. Use • or – for bullet points instead of * or -. Do not use markdown headings (###).",
 };
 
-export const GOOGLE_SEARCH_PROMPT_ADDON = `When both uploaded sources and web search are available, always prefer the user's uploaded documents. Only use web search when the documents don't contain relevant information or when the user asks about current events or recent information. When citing web sources, clearly distinguish them from document sources.`;
+export const WEB_TOOLS_PROMPT_ADDON = `You also have access to web tools (search, URL reading, or maps). Always prefer the user's uploaded documents first. If the uploaded sources do not contain relevant information to answer the question, or the user asks about current events, news, or topics outside their documents, use your web tools to find the answer instead. When you cannot find the answer in the uploaded sources, do NOT say you can't answer — use your web tools to help. When citing web sources, clearly distinguish them from document sources.`;
 
 export const SUMMARIZATION_PROMPT = `Compress the following conversation into a concise summary that preserves:
 - The original questions asked and their context

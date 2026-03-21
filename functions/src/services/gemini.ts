@@ -6,7 +6,7 @@ import {
   GEMINI_MODELS,
   SYSTEM_PROMPT,
   CHANNEL_PROMPT_OVERRIDES,
-  GOOGLE_SEARCH_PROMPT_ADDON,
+  WEB_TOOLS_PROMPT_ADDON,
 } from "../config";
 
 let genaiClient: GoogleGenAI | null = null;
@@ -130,9 +130,12 @@ function buildSystemPrompt(
   channel: string = "web",
   enabledTools: Record<string, boolean> = {}
 ): string {
-  let prompt = SYSTEM_PROMPT;
-  if (enabledTools.googleSearch) {
-    prompt += `\n\n${GOOGLE_SEARCH_PROMPT_ADDON}`;
+  const hasWebTools = enabledTools.googleSearch || enabledTools.urlContext || enabledTools.googleMaps;
+  let prompt = hasWebTools
+    ? SYSTEM_PROMPT.replace("grounded exclusively in", "grounded primarily in")
+    : SYSTEM_PROMPT;
+  if (hasWebTools) {
+    prompt += `\n\n${WEB_TOOLS_PROMPT_ADDON}`;
   }
   if (customSystemPrompt) {
     prompt += `\n\n${customSystemPrompt}`;
