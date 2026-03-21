@@ -43,6 +43,29 @@ export const SUMMARIZATION_THRESHOLD = 500_000;
 export const SUMMARIZATION_MODEL = "gemini-2.5-flash";
 export const SUMMARIZATION_COOLDOWN_MS = 60_000;
 
+// --- Telegram ---
+
+export function getTelegramBotToken(): string {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set in functions/.env");
+  return token;
+}
+
+export function getTelegramWebhookSecret(): string {
+  const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  if (!secret) throw new Error("TELEGRAM_WEBHOOK_SECRET not set in functions/.env");
+  return secret;
+}
+
+export const TELEGRAM_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+export const TELEGRAM_DEFAULT_MODEL = "gemini-2.5-flash";
+
+// --- Channel-specific prompt overrides ---
+
+export const CHANNEL_PROMPT_OVERRIDES: Record<string, string> = {
+  telegram: "Do NOT include inline citation markers like [1], [2] in your response. Just provide the answer directly. Keep responses concise for mobile reading. Use • or – for bullet points instead of * or -. Do not use markdown headings (###).",
+};
+
 export const SUMMARIZATION_PROMPT = `Compress the following conversation into a concise summary that preserves:
 - The original questions asked and their context
 - Key answers, decisions, and conclusions reached

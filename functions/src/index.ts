@@ -14,9 +14,13 @@ import {
   SUMMARIZATION_THRESHOLD,
   SUMMARIZATION_COOLDOWN_MS,
 } from "./config";
+import { telegramWebhook } from "./telegram/webhook";
 import type { Source } from "./types";
 
 admin.initializeApp();
+
+// Re-export Telegram webhook
+export { telegramWebhook };
 
 // Health check endpoint
 export const health = onRequest({ cors: true }, (_req, res) => {

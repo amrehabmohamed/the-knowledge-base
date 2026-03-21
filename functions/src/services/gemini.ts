@@ -5,6 +5,7 @@ import {
   getGeminiStoreId,
   GEMINI_MODELS,
   SYSTEM_PROMPT,
+  CHANNEL_PROMPT_OVERRIDES,
 } from "../config";
 
 let genaiClient: GoogleGenAI | null = null;
@@ -121,12 +122,28 @@ export type ChatChunk =
  * Streams a chat response from Gemini using FileSearch Store for grounding.
  * Filters by notebookId metadata to ensure notebook-level data isolation.
  */
+function buildSystemPrompt(
+  customSystemPrompt?: string,
+  channel: string = "web"
+): string {
+  let prompt = SYSTEM_PROMPT;
+  if (customSystemPrompt) {
+    prompt += `\n\n${customSystemPrompt}`;
+  }
+  const channelOverride = CHANNEL_PROMPT_OVERRIDES[channel];
+  if (channelOverride) {
+    prompt += `\n\n${channelOverride}`;
+  }
+  return prompt;
+}
+
 export async function* queryWithFileSearch(
   query: string,
   history: Array<{ role: string; content: string }>,
   notebookId: string,
   modelId: string,
-  customSystemPrompt?: string
+  customSystemPrompt?: string,
+  channel: "web" | "telegram" = "web"
 ): AsyncGenerator<ChatChunk> {
   const client = getClient();
   const storeId = getGeminiStoreId();
@@ -167,9 +184,7 @@ export async function* queryWithFileSearch(
     model: apiModel,
     contents,
     config: {
-      systemInstruction: customSystemPrompt
-        ? `${SYSTEM_PROMPT}\n\n${customSystemPrompt}`
-        : SYSTEM_PROMPT,
+      systemInstruction: buildSystemPrompt(customSystemPrompt, channel),
       tools: [toolConfig],
     },
   });
