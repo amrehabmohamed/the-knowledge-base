@@ -180,6 +180,9 @@ export async function* queryWithFileSearch(
   });
 
   // Build tools array — FileSearch is always included, others are per-notebook toggles
+  // IMPORTANT: Gemini 2.5 models cannot combine multiple built-in tools.
+  // Tool combination (fileSearch + googleSearch etc.) only works on Gemini 3 models.
+  const isGemini3 = apiModel.startsWith("gemini-3");
   const tools: Array<Record<string, unknown>> = [
     {
       fileSearch: {
@@ -189,18 +192,17 @@ export async function* queryWithFileSearch(
     },
   ];
 
-  // Gemini 2.5 models can't combine Google Search + Google Maps — Search takes priority
-  const isGemini3 = apiModel.startsWith("gemini-3");
-  if (enabledTools.googleSearch && enabledTools.googleMaps && !isGemini3) {
-    tools.push({ googleSearch: {} });
-    console.log(`[CHAT] Skipping googleMaps — incompatible with googleSearch on ${apiModel}`);
-  } else {
+  if (isGemini3) {
     if (enabledTools.googleSearch) tools.push({ googleSearch: {} });
     if (enabledTools.googleMaps) tools.push({ googleMaps: {} });
+    if (enabledTools.urlContext) tools.push({ urlContext: {} });
+  } else if (enabledTools.googleSearch || enabledTools.googleMaps || enabledTools.urlContext) {
+    console.log(`[CHAT] Skipping extra tools — ${apiModel} does not support tool combination with fileSearch`);
   }
-  if (enabledTools.urlContext) tools.push({ urlContext: {} });
 
-  console.log(`[CHAT] tools config: ${JSON.stringify(tools)}`);
+  // When combining multiple built-in tools, includeServerSideToolInvocations is required
+  const hasExtraTools = tools.length > 1;
+  console.log(`[CHAT] tools config (${tools.length} tools, serverSide=${hasExtraTools}): ${JSON.stringify(tools)}`);
 
   const response = await client.models.generateContentStream({
     model: apiModel,
@@ -208,6 +210,7 @@ export async function* queryWithFileSearch(
     config: {
       systemInstruction: buildSystemPrompt(customSystemPrompt, channel, enabledTools),
       tools,
+      ...(hasExtraTools && { toolConfig: { includeServerSideToolInvocations: true } }),
     },
   });
 
