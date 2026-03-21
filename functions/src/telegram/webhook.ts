@@ -66,13 +66,17 @@ async function processUpdate(update: TelegramUpdate): Promise<void> {
     const handledByLinking = await handleLinkingInput(chatId, text);
     if (handledByLinking) return;
 
-    // Route commands
+    // Route commands (but let /web, /maps, /url pass through to chat handler)
     if (text.startsWith("/")) {
-      await routeCommand(chatId, text);
-      return;
+      const chatToolCommands = ["/web ", "/maps ", "/url "];
+      const isChatTool = chatToolCommands.some((cmd) => text.toLowerCase().startsWith(cmd));
+      if (!isChatTool) {
+        await routeCommand(chatId, text);
+        return;
+      }
     }
 
-    // Otherwise treat as a chat query
+    // Chat query (including /web, /maps, /url tool commands)
     await handleChatMessage(chatId, text);
   } catch (err) {
     console.error(`[TELEGRAM] Error handling message from ${chatId}:`, err);

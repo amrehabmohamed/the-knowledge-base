@@ -363,6 +363,11 @@ export async function handleHelp(chatId: number): Promise<void> {
       "/unlink — Disconnect this Telegram account",
       "/help — Show this message",
       "",
+      "Web tools (use instead of your sources):",
+      "/web <query> — Search the web",
+      "/maps <query> — Search Google Maps",
+      "/url <link> <query> — Read a URL",
+      "",
       "Or just type a question to chat with your active notebook!",
     ].join("\n")
   );
