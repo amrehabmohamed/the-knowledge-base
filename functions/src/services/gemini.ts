@@ -146,10 +146,12 @@ function buildSystemPrompt(
 
 /**
  * Extracts citations from Gemini's groundingMetadata in the last response chunk.
+ * Also returns whether grounding was used (even if chunks are empty — Gemini 3 bug).
  */
 function extractCitations(lastChunk: Record<string, unknown> | null): {
   citations: ChatCitation[];
   totalTokens: number;
+  wasGrounded: boolean;
 } {
   const usageMetadata = lastChunk?.usageMetadata as Record<string, unknown> | undefined;
   const totalTokens = (usageMetadata?.totalTokenCount as number) ?? 0;
@@ -228,8 +230,14 @@ function extractCitations(lastChunk: Record<string, unknown> | null): {
     console.error(`[CHAT] Error extracting citations:`, err);
   }
 
-  console.log(`[CHAT] Total citations: ${citations.length}`);
-  return { citations, totalTokens };
+  // Detect if grounding was used — even if chunks are empty (Gemini 3 bug returns {} chunks)
+  const candidates = lastChunk?.candidates as Array<Record<string, unknown>> | undefined;
+  const grounding = candidates?.[0]?.groundingMetadata as Record<string, unknown> | undefined;
+  const groundingChunks = grounding?.groundingChunks as Array<unknown> | undefined;
+  const wasGrounded = (groundingChunks?.length ?? 0) > 0;
+
+  console.log(`[CHAT] Total citations: ${citations.length}, wasGrounded: ${wasGrounded}`);
+  return { citations, totalTokens, wasGrounded };
 }
 
 /**
@@ -344,13 +352,16 @@ export async function* queryWithFileSearch(
   }
 
   const pass1Result = extractCitations(pass1LastChunk);
-  console.log(`[CHAT] Pass 1 complete. Chunks: ${pass1ChunkCount}, Citations: ${pass1Result.citations.length}`);
+  console.log(`[CHAT] Pass 1 complete. Chunks: ${pass1ChunkCount}, Citations: ${pass1Result.citations.length}, Grounded: ${pass1Result.wasGrounded}`);
 
-  if (pass1Result.citations.length > 0) {
+  if (pass1Result.wasGrounded) {
     // FileSearch found relevant sources — use Pass 1 results
-    console.log(`[CHAT] FileSearch had citations, using Pass 1 result`);
+    // Note: Gemini 3 may return empty groundingChunks (known bug) but still grounds correctly
+    console.log(`[CHAT] FileSearch was grounded, using Pass 1 result`);
     yield { type: "token", text: pass1Text };
-    yield { type: "citations", citations: pass1Result.citations };
+    if (pass1Result.citations.length > 0) {
+      yield { type: "citations", citations: pass1Result.citations };
+    }
     yield { type: "done", totalTokens: pass1Result.totalTokens };
     return;
   }
