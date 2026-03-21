@@ -189,9 +189,16 @@ export async function* queryWithFileSearch(
     },
   ];
 
-  if (enabledTools.googleSearch) tools.push({ googleSearch: {} });
+  // Gemini 2.5 models can't combine Google Search + Google Maps — Search takes priority
+  const isGemini3 = apiModel.startsWith("gemini-3");
+  if (enabledTools.googleSearch && enabledTools.googleMaps && !isGemini3) {
+    tools.push({ googleSearch: {} });
+    console.log(`[CHAT] Skipping googleMaps — incompatible with googleSearch on ${apiModel}`);
+  } else {
+    if (enabledTools.googleSearch) tools.push({ googleSearch: {} });
+    if (enabledTools.googleMaps) tools.push({ googleMaps: {} });
+  }
   if (enabledTools.urlContext) tools.push({ urlContext: {} });
-  if (enabledTools.googleMaps) tools.push({ googleMaps: {} });
 
   console.log(`[CHAT] tools config: ${JSON.stringify(tools)}`);
 
