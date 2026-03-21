@@ -389,6 +389,9 @@ export const chat = onRequest(
     // Per-notebook custom system prompt (appended to default)
     const customSystemPrompt = (notebookData?.systemPrompt as string) || undefined;
 
+    // Per-notebook tool toggles (Google Search, URL Context, Maps)
+    const notebookTools = (notebookData?.tools as Record<string, boolean>) || {};
+
     // --- Summarization check ---
     let chatHistory = history ?? [];
 
@@ -500,7 +503,9 @@ export const chat = onRequest(
         chatHistory,
         notebookId,
         modelId ?? "gemini-3-flash",
-        customSystemPrompt
+        customSystemPrompt,
+        "web",
+        notebookTools
       );
 
       for await (const chunk of stream) {

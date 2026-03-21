@@ -18,6 +18,8 @@ export interface Citation {
   sourceId: string;
   sourceName: string;
   chunkText: string;
+  type?: "source" | "web";
+  url?: string;
 }
 
 export interface MessageMetrics {

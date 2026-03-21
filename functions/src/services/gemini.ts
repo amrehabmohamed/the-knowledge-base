@@ -6,6 +6,7 @@ import {
   GEMINI_MODELS,
   SYSTEM_PROMPT,
   CHANNEL_PROMPT_OVERRIDES,
+  GOOGLE_SEARCH_PROMPT_ADDON,
 } from "../config";
 
 let genaiClient: GoogleGenAI | null = null;
@@ -111,6 +112,8 @@ export interface ChatCitation {
   sourceId: string;
   sourceName: string;
   chunkText: string;
+  type?: "source" | "web";
+  url?: string;
 }
 
 export type ChatChunk =
@@ -124,9 +127,13 @@ export type ChatChunk =
  */
 function buildSystemPrompt(
   customSystemPrompt?: string,
-  channel: string = "web"
+  channel: string = "web",
+  enabledTools: Record<string, boolean> = {}
 ): string {
   let prompt = SYSTEM_PROMPT;
+  if (enabledTools.googleSearch) {
+    prompt += `\n\n${GOOGLE_SEARCH_PROMPT_ADDON}`;
+  }
   if (customSystemPrompt) {
     prompt += `\n\n${customSystemPrompt}`;
   }
@@ -143,7 +150,8 @@ export async function* queryWithFileSearch(
   notebookId: string,
   modelId: string,
   customSystemPrompt?: string,
-  channel: "web" | "telegram" = "web"
+  channel: "web" | "telegram" = "web",
+  enabledTools: Record<string, boolean> = {}
 ): AsyncGenerator<ChatChunk> {
   const client = getClient();
   const storeId = getGeminiStoreId();
@@ -171,21 +179,28 @@ export async function* queryWithFileSearch(
     parts: [{ text: query }],
   });
 
-  // Filter by notebook_id for tenant isolation
-  const toolConfig = {
-    fileSearch: {
-      fileSearchStoreNames: [storeId],
-      metadataFilter,
+  // Build tools array — FileSearch is always included, others are per-notebook toggles
+  const tools: Array<Record<string, unknown>> = [
+    {
+      fileSearch: {
+        fileSearchStoreNames: [storeId],
+        metadataFilter,
+      },
     },
-  };
-  console.log(`[CHAT] tools config: ${JSON.stringify(toolConfig)}`);
+  ];
+
+  if (enabledTools.googleSearch) tools.push({ googleSearch: {} });
+  if (enabledTools.urlContext) tools.push({ urlContext: {} });
+  if (enabledTools.googleMaps) tools.push({ googleMaps: {} });
+
+  console.log(`[CHAT] tools config: ${JSON.stringify(tools)}`);
 
   const response = await client.models.generateContentStream({
     model: apiModel,
     contents,
     config: {
-      systemInstruction: buildSystemPrompt(customSystemPrompt, channel),
-      tools: [toolConfig],
+      systemInstruction: buildSystemPrompt(customSystemPrompt, channel, enabledTools),
+      tools,
     },
   });
 
@@ -268,6 +283,8 @@ export async function* queryWithFileSearch(
 
         for (const chunkIdx of chunkIndices) {
           const chunk = groundingChunks[chunkIdx];
+
+          // FileSearch citations (uploaded documents)
           const retrieved = chunk?.retrievedContext as
             | Record<string, unknown>
             | undefined;
@@ -279,6 +296,24 @@ export async function* queryWithFileSearch(
               sourceName:
                 (retrieved.title as string) ?? `Source ${chunkIdx + 1}`,
               chunkText,
+              type: "source",
+            });
+            continue;
+          }
+
+          // Web citations (Google Search / URL Context / Maps)
+          const web = chunk?.web as
+            | { uri?: string; title?: string }
+            | undefined;
+          if (web?.uri) {
+            console.log(`[CHAT] Web citation found: uri=${web.uri}, title=${web.title}`);
+            citations.push({
+              index: citations.length + 1,
+              sourceId: web.uri,
+              sourceName: web.title ?? "Web source",
+              chunkText,
+              type: "web",
+              url: web.uri,
             });
           }
         }

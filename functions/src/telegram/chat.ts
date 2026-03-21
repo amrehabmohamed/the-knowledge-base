@@ -59,6 +59,7 @@ export async function handleChatMessage(chatId: number, text: string): Promise<v
 
   const notebookData = notebookSnap.data()!;
   const customSystemPrompt = (notebookData.systemPrompt as string) || undefined;
+  const notebookTools = (notebookData.tools as Record<string, boolean>) || {};
 
   // 5. Session management (get or create, check expiry)
   const { sessionId, history } = await getOrCreateSession(chatId, link, notebookId);
@@ -75,7 +76,8 @@ export async function handleChatMessage(chatId: number, text: string): Promise<v
       notebookId,
       modelId,
       customSystemPrompt,
-      "telegram"
+      "telegram",
+      notebookTools
     );
 
     // 7. Stream response to Telegram

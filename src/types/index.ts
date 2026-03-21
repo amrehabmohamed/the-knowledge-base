@@ -1,4 +1,4 @@
-export type { Notebook, CreateNotebookInput } from "./notebook";
+export type { Notebook, NotebookTools, CreateNotebookInput } from "./notebook";
 export type {
   Source,
   SourceStatus,
