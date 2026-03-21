@@ -6,7 +6,7 @@ A single-user knowledge management tool inspired by NotebookLM. Upload documents
 
 - **Frontend**: React + Vite + TypeScript, shadcn/ui + prompt-kit + Tailwind CSS
 - **Fonts**: Outfit (headings, `font-heading`), Urbanist (body, `font-body`)
-- **Auth**: Firebase Auth (email/password)
+- **Auth**: Firebase Auth (email/password, signup disabled on frontend)
 - **Database**: Cloud Firestore
 - **Storage**: Cloud Storage
 - **Backend**: Cloud Functions (Node.js, TypeScript) in `functions/`
@@ -32,6 +32,13 @@ A single-user knowledge management tool inspired by NotebookLM. Upload documents
   - `functions/src/middleware/` — Auth token validation
   - `functions/src/config.ts` — Environment variable access
   - `functions/src/types/` — Backend type definitions
+- `functions/src/telegram/` — Telegram bot integration
+  - `webhook.ts` — Main onRequest handler with webhook secret validation
+  - `commands.ts` — Command handlers (/start, /notebooks, /switch, /model, /status, /reset, /help, /unlink) + web tool commands in /help
+  - `chat.ts` — Chat message handler with session lifecycle (24h expiry) + slash command parsing (/web, /maps, /url)
+  - `telegramClient.ts` — Telegram Bot API wrapper (sendMessage, markdownToTelegramHtml)
+  - `rateLimiter.ts` — In-memory sliding window rate limiter (5/min per user, 30/min global)
+  - `types.ts` — Telegram-specific type definitions
 - `prompt-templates/` — Reusable system prompt templates (future feature)
 - `firestore.rules` — Firestore security rules
 - `storage.rules` — Cloud Storage security rules
@@ -55,6 +62,8 @@ firebase deploy --only firestore:rules,firestore:indexes  # Deploy rules + index
 - Frontend vars use `VITE_` prefix
 - Function secrets in `functions/.env` (gitignored), accessed via `process.env`
 - `functions.config()` is deprecated — do NOT use it
+- Netlify env vars: `VITE_` vars must be set in Netlify dashboard (Project configuration → Environment variables) for production builds
+- Telegram bot secrets (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`) in `functions/.env` only (not needed on Netlify)
 
 ## Conventions
 
@@ -81,6 +90,17 @@ firebase deploy --only firestore:rules,firestore:indexes  # Deploy rules + index
 - Per-notebook system prompt: stored as `systemPrompt` field on notebook doc, appended to default system prompt server-side
 - Token counting: server-side via Gemini `usageMetadata.totalTokenCount`, stored on session via Firestore `increment()`
 - Summarization: triggers at 500K tokens, uses `gemini-2.5-flash`, 60s cooldown on failure
+- Channel-aware prompts: `CHANNEL_PROMPT_OVERRIDES` in config.ts appends channel-specific instructions (e.g. no citations for Telegram)
+- Telegram bot: uses raw `fetch` calls to Telegram Bot API (no npm package), webhook via Cloud Functions v2 `onRequest`
+- Telegram auth: email OTP linking via Firebase Trigger Email extension + Gmail SMTP, stored in `telegramLinks` collection
+- Telegram formatting: Gemini Markdown → HTML conversion (`markdownToTelegramHtml`) with `"HTML"` parse mode
+- Telegram sessions: 24h auto-expiry, in-memory `chatStates` Map (rehydrated on cold start from Firestore)
+- Cloud Functions v2 requires `allUsers` invoker policy for public webhooks: `gcloud functions add-invoker-policy-binding <name> --member=allUsers`
+- Gemini built-in tools (FileSearch, googleSearch, urlContext, googleMaps) CANNOT be combined in the same request — use one at a time
+- Web tools via slash commands: `/web` (Google Search), `/maps` (Google Maps), `/url` (URL Context) — parsed in frontend (`useChat.ts`) and Telegram (`chat.ts`), sent as `toolOverride` param to backend
+- Default tool is always FileSearch (uploaded sources); slash commands override to a specific web tool for that message only
+- Per-notebook tool toggles stored as `tools` field on notebook doc (e.g. `{ googleSearch: true }`) — controls which tools are available but slash commands are the actual trigger
+- Frontend slash command menu: typing `/` in chat input shows a popup menu (ChatInput.tsx) with keyboard navigation
 
 ## Build Status
 
@@ -88,6 +108,8 @@ firebase deploy --only firestore:rules,firestore:indexes  # Deploy rules + index
 - **Phase 1A**: Complete (auth, notebooks, file upload, source status, security rules)
 - **Phase 1B**: Complete (URL ingestion, chat with streaming/citations, model selection, session reset, upload dialog with tags)
 - **Phase 1C**: Complete (summarization, archive, system status/warm-up, per-notebook system prompt, token counting, RTL support, chat layout redesign, Netlify deployment)
+- **Phase 2**: Complete (Telegram bot — email OTP linking, notebook/model selection, session management, rate limiting, channel-aware prompts, location support, HTML formatting)
+- **Phase 3**: Complete (Web tools — Google Search, Google Maps, URL Context via slash commands /web /maps /url, per-notebook tool settings, slash command menu in web UI)
 
 ## Full Requirements
 

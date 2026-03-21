@@ -5,8 +5,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuthContext } from "../context/AuthContext";
 
-type AuthMode = "login" | "signup";
-
 const AUTH_ERROR_MESSAGES: Record<string, string> = {
   "auth/user-not-found": "No account found with this email.",
   "auth/wrong-password": "Incorrect password.",
@@ -26,43 +24,25 @@ function getErrorMessage(error: unknown): string {
 }
 
 export function LoginPage() {
-  const [mode, setMode] = useState<AuthMode>("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const { login, signup } = useAuthContext();
+  const { login } = useAuthContext();
   const navigate = useNavigate();
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError("");
-
-    if (mode === "signup" && password !== confirmPassword) {
-      setError("Passwords do not match.");
-      return;
-    }
-
     setSubmitting(true);
     try {
-      if (mode === "login") {
-        await login(email, password);
-      } else {
-        await signup(email, password);
-      }
+      await login(email, password);
       navigate("/", { replace: true });
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
-  };
-
-  const toggleMode = () => {
-    setMode(mode === "login" ? "signup" : "login");
-    setError("");
-    setConfirmPassword("");
   };
 
   return (
@@ -73,9 +53,7 @@ export function LoginPage() {
             Knowledge Base
           </h1>
           <p className="font-body mt-1 text-sm text-muted-foreground">
-            {mode === "login"
-              ? "Sign in to your account"
-              : "Create a new account"}
+            Sign in to your account
           </p>
         </div>
 
@@ -102,54 +80,18 @@ export function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              autoComplete={
-                mode === "login" ? "current-password" : "new-password"
-              }
+              autoComplete="current-password"
             />
           </div>
-
-          {mode === "signup" && (
-            <div className="space-y-2">
-              <Label htmlFor="confirm-password">Confirm Password</Label>
-              <Input
-                id="confirm-password"
-                type="password"
-                placeholder="Confirm your password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                required
-                autoComplete="new-password"
-              />
-            </div>
-          )}
 
           {error && (
             <p className="text-sm text-destructive">{error}</p>
           )}
 
           <Button type="submit" className="w-full" disabled={submitting}>
-            {submitting
-              ? mode === "login"
-                ? "Signing in..."
-                : "Creating account..."
-              : mode === "login"
-                ? "Sign In"
-                : "Create Account"}
+            {submitting ? "Signing in..." : "Sign In"}
           </Button>
         </form>
-
-        <p className="text-center text-sm text-muted-foreground">
-          {mode === "login"
-            ? "Don't have an account? "
-            : "Already have an account? "}
-          <button
-            type="button"
-            onClick={toggleMode}
-            className="font-medium text-foreground underline underline-offset-4 hover:text-foreground/80"
-          >
-            {mode === "login" ? "Sign up" : "Sign in"}
-          </button>
-        </p>
       </div>
     </div>
   );
