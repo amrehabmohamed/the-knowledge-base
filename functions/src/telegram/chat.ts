@@ -1,5 +1,5 @@
 import * as admin from "firebase-admin";
-import { queryWithFileSearch } from "../services/gemini";
+import { queryWithFileSearch, type ChatAttachment } from "../services/gemini";
 import { summarizeSession } from "../services/summarize";
 import {
   TELEGRAM_SESSION_TTL_MS,
@@ -7,10 +7,11 @@ import {
   SUMMARIZATION_THRESHOLD,
   SUMMARIZATION_COOLDOWN_MS,
 } from "../config";
-import { sendMessage, sendChatAction, streamResponse } from "./telegramClient";
+import { sendMessage, sendChatAction, streamResponse, downloadTelegramFile } from "./telegramClient";
 import { checkRateLimit } from "./rateLimiter";
 import { chatStates, getLink } from "./commands";
-import type { TelegramLink } from "./types";
+import type { TelegramLink, TelegramMessage } from "./types";
+import type { Attachment } from "../types";
 
 function db() {
   return admin.firestore();
@@ -33,7 +34,145 @@ function parseSlashCommand(text: string): { query: string; toolOverride?: string
   return { query: text };
 }
 
-export async function handleChatMessage(chatId: number, text: string): Promise<void> {
+/** Supported MIME types for Telegram document attachments */
+const SUPPORTED_DOC_MIMES: Record<string, string> = {
+  "image/jpeg": "image",
+  "image/png": "image",
+  "image/gif": "image",
+  "image/webp": "image",
+  "audio/mpeg": "audio",
+  "audio/mp3": "audio",
+  "audio/wav": "audio",
+  "audio/ogg": "audio",
+  "audio/aac": "audio",
+  "audio/flac": "audio",
+  "audio/mp4": "audio",
+  "application/pdf": "pdf",
+};
+
+const MAX_TELEGRAM_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
+/**
+ * Extract media from a Telegram message, download, and upload to Cloud Storage.
+ */
+async function extractTelegramMedia(
+  message: TelegramMessage,
+  uid: string,
+  notebookId: string,
+  sessionId: string
+): Promise<{ attachments: Attachment[]; chatAttachments: ChatAttachment[]; error?: string }> {
+  const attachments: Attachment[] = [];
+  const chatAttachments: ChatAttachment[] = [];
+
+  const mediaItems: Array<{ fileId: string; mimeType: string; fileName: string; fileSize?: number }> = [];
+
+  // Photo — pick the largest resolution (last in array)
+  if (message.photo?.length) {
+    const largest = message.photo[message.photo.length - 1];
+    mediaItems.push({
+      fileId: largest.file_id,
+      mimeType: "image/jpeg",
+      fileName: "photo.jpg",
+      fileSize: largest.file_size,
+    });
+  }
+
+  // Voice message
+  if (message.voice) {
+    mediaItems.push({
+      fileId: message.voice.file_id,
+      mimeType: message.voice.mime_type || "audio/ogg",
+      fileName: "voice.ogg",
+      fileSize: message.voice.file_size,
+    });
+  }
+
+  // Audio file
+  if (message.audio) {
+    mediaItems.push({
+      fileId: message.audio.file_id,
+      mimeType: message.audio.mime_type || "audio/mpeg",
+      fileName: message.audio.file_name || "audio.mp3",
+      fileSize: message.audio.file_size,
+    });
+  }
+
+  // Document — check if supported type
+  if (message.document) {
+    const mime = message.document.mime_type || "";
+    if (!SUPPORTED_DOC_MIMES[mime]) {
+      return {
+        attachments: [],
+        chatAttachments: [],
+        error: `Unsupported file type: ${mime || "unknown"}. I can understand images, audio, and PDF files.`,
+      };
+    }
+    mediaItems.push({
+      fileId: message.document.file_id,
+      mimeType: mime,
+      fileName: message.document.file_name || "document",
+      fileSize: message.document.file_size,
+    });
+  }
+
+  if (mediaItems.length === 0) return { attachments, chatAttachments };
+
+  const bucket = admin.storage().bucket();
+
+  for (const item of mediaItems) {
+    // Size check
+    if (item.fileSize && item.fileSize > MAX_TELEGRAM_FILE_SIZE) {
+      return {
+        attachments: [],
+        chatAttachments: [],
+        error: `File "${item.fileName}" is too large (max 10 MB).`,
+      };
+    }
+
+    console.log(`[TELEGRAM] Downloading file: ${item.fileName} (${item.mimeType})`);
+    const { buffer } = await downloadTelegramFile(item.fileId);
+
+    const storageName = `${Date.now()}-${item.fileName}`;
+    const storagePath = `users/${uid}/chat-attachments/${notebookId}/${sessionId}/${storageName}`;
+
+    // Upload to Cloud Storage
+    const file = bucket.file(storagePath);
+    await file.save(buffer, { contentType: item.mimeType });
+
+    // Build Firebase Storage download URL (no signing needed)
+    const bucketName = bucket.name;
+    const encodedPath = encodeURIComponent(storagePath);
+    const downloadUrl = `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodedPath}?alt=media`;
+
+    const type = item.mimeType.startsWith("image/")
+      ? "image"
+      : item.mimeType.startsWith("audio/")
+        ? "audio"
+        : "pdf";
+
+    attachments.push({
+      type: type as "image" | "audio" | "pdf",
+      mimeType: item.mimeType,
+      fileName: item.fileName,
+      sizeBytes: buffer.length,
+      storageRef: storagePath,
+      downloadUrl,
+    });
+
+    chatAttachments.push({
+      storageRef: storagePath,
+      mimeType: item.mimeType,
+      fileName: item.fileName,
+      sizeBytes: buffer.length,
+    });
+  }
+
+  return { attachments, chatAttachments };
+}
+
+export async function handleChatMessage(chatId: number, message: TelegramMessage): Promise<void> {
+  const text = message.text?.trim() ?? message.caption?.trim() ?? "";
+
   // 1. Check link
   const link = await getLink(chatId);
   if (!link) {
@@ -89,7 +228,24 @@ export async function handleChatMessage(chatId: number, text: string): Promise<v
   await sendChatAction(chatId);
 
   try {
-    // 6. Query with selected tool
+    // 6. Extract and upload media attachments
+    let attachments: Attachment[] | undefined;
+    let chatAttachments: ChatAttachment[] | undefined;
+
+    const hasMedia = !!(message.photo || message.voice || message.audio || message.document);
+    if (hasMedia) {
+      const mediaResult = await extractTelegramMedia(message, link.firebaseUid, notebookId, sessionId);
+      if (mediaResult.error) {
+        await sendMessage(chatId, mediaResult.error);
+        return;
+      }
+      if (mediaResult.attachments.length > 0) {
+        attachments = mediaResult.attachments;
+        chatAttachments = mediaResult.chatAttachments;
+      }
+    }
+
+    // 7. Query with selected tool + attachments
     const stream = queryWithFileSearch(
       actualQuery,
       history,
@@ -98,10 +254,11 @@ export async function handleChatMessage(chatId: number, text: string): Promise<v
       customSystemPrompt,
       "telegram",
       notebookTools,
-      toolOverride
+      toolOverride,
+      chatAttachments
     );
 
-    // 7. Stream response to Telegram
+    // 8. Stream response to Telegram
     const { fullText, totalTokens } = await streamResponse(chatId, stream);
 
     if (!fullText) {
@@ -109,18 +266,19 @@ export async function handleChatMessage(chatId: number, text: string): Promise<v
       return;
     }
 
-    // 8. Save messages to Firestore
+    // 9. Save messages to Firestore
     const messagesRef = db().collection(`notebooks/${notebookId}/sessions/${sessionId}/messages`);
 
     await messagesRef.add({
       sessionId,
       role: "user",
-      content: text,
+      content: text || (attachments ? `[${attachments.map((a) => a.fileName).join(", ")}]` : ""),
       citations: null,
       tokenCount: 0,
       modelId,
       agentType: toolOverride ?? "user",
       metrics: null,
+      attachments: attachments ?? null,
       superseded: false,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
@@ -138,7 +296,7 @@ export async function handleChatMessage(chatId: number, text: string): Promise<v
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    // 9. Update session token count and message count
+    // 10. Update session token count and message count
     const sessionRef = db().doc(`notebooks/${notebookId}/sessions/${sessionId}`);
     await sessionRef.update({
       totalTokens: admin.firestore.FieldValue.increment(totalTokens),
@@ -146,7 +304,7 @@ export async function handleChatMessage(chatId: number, text: string): Promise<v
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    // 10. Check summarization threshold
+    // 11. Check summarization threshold
     await checkAndSummarize(notebookId, sessionId);
   } catch (err) {
     console.error("[TELEGRAM] Chat error:", err);

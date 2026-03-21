@@ -236,6 +236,38 @@ const TOOL_OVERRIDES: Record<string, Record<string, unknown>> = {
   googleMaps: { googleMaps: {} },
 };
 
+/** Attachment metadata passed from frontend/Telegram for multimodal messages */
+export interface ChatAttachment {
+  storageRef: string;
+  mimeType: string;
+  fileName: string;
+  sizeBytes: number;
+}
+
+/**
+ * Downloads attachments from Cloud Storage and converts to Gemini inline parts.
+ */
+async function prepareMultimodalParts(
+  attachments: ChatAttachment[]
+): Promise<Array<{ inlineData: { mimeType: string; data: string } }>> {
+  const bucket = admin.storage().bucket();
+  const parts: Array<{ inlineData: { mimeType: string; data: string } }> = [];
+
+  for (const att of attachments) {
+    console.log(`[CHAT] Downloading attachment: ${att.fileName} (${att.mimeType}, ${att.sizeBytes} bytes)`);
+    const [buffer] = await bucket.file(att.storageRef).download();
+    parts.push({
+      inlineData: {
+        mimeType: att.mimeType,
+        data: buffer.toString("base64"),
+      },
+    });
+  }
+
+  console.log(`[CHAT] Prepared ${parts.length} multimodal parts`);
+  return parts;
+}
+
 export async function* queryWithFileSearch(
   query: string,
   history: Array<{ role: string; content: string }>,
@@ -244,7 +276,8 @@ export async function* queryWithFileSearch(
   customSystemPrompt?: string,
   channel: "web" | "telegram" = "web",
   enabledTools: Record<string, boolean> = {},
-  toolOverride?: string
+  toolOverride?: string,
+  attachments?: ChatAttachment[]
 ): AsyncGenerator<ChatChunk> {
   const client = getClient();
   const storeId = getGeminiStoreId();
@@ -259,8 +292,9 @@ export async function* queryWithFileSearch(
   console.log(`[CHAT] query="${query}"`);
   console.log(`[CHAT] history length=${history.length}`);
   console.log(`[CHAT] toolOverride=${toolOverride ?? "none"}`);
+  console.log(`[CHAT] attachments=${attachments?.length ?? 0}`);
 
-  // Build conversation history
+  // Build conversation history (text-only — previous attachments already processed)
   const contents: Content[] = [];
   for (const msg of history) {
     contents.push({
@@ -268,10 +302,17 @@ export async function* queryWithFileSearch(
       parts: [{ text: msg.content }],
     });
   }
-  contents.push({
-    role: "user",
-    parts: [{ text: query }],
-  });
+
+  // Build current user message with optional multimodal parts
+  const userParts: Array<Record<string, unknown>> = [];
+  if (attachments?.length) {
+    const mediaParts = await prepareMultimodalParts(attachments);
+    userParts.push(...mediaParts);
+  }
+  if (query) {
+    userParts.push({ text: query });
+  }
+  contents.push({ role: "user", parts: userParts });
 
   // Determine which tool to use:
   // - toolOverride (from /web, /maps, /url commands) → use that specific web tool

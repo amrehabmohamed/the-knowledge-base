@@ -14,6 +14,13 @@ export interface StreamCallbacks {
   onDone: () => void;
 }
 
+interface ChatAttachmentParam {
+  storageRef: string;
+  mimeType: string;
+  fileName: string;
+  sizeBytes: number;
+}
+
 interface ChatParams {
   notebookId: string;
   query: string;
@@ -21,6 +28,7 @@ interface ChatParams {
   history: Array<{ role: string; content: string }>;
   sessionId?: string;
   toolOverride?: string;
+  attachments?: ChatAttachmentParam[];
 }
 
 /**

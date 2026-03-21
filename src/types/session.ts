@@ -27,6 +27,15 @@ export interface MessageMetrics {
   totalMs: number;
 }
 
+export interface Attachment {
+  type: "image" | "audio" | "pdf";
+  mimeType: string;
+  fileName: string;
+  sizeBytes: number;
+  storageRef: string;
+  downloadUrl: string;
+}
+
 export interface Message {
   id: string;
   sessionId: string;
@@ -37,6 +46,7 @@ export interface Message {
   modelId: string | null;
   agentType: string;
   metrics: MessageMetrics | null;
+  attachments?: Attachment[] | null;
   superseded?: boolean;
   createdAt: Timestamp;
 }

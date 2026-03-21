@@ -28,6 +28,15 @@ export interface Source {
   updatedAt: Timestamp;
 }
 
+export interface Attachment {
+  type: "image" | "audio" | "pdf";
+  mimeType: string;
+  fileName: string;
+  sizeBytes: number;
+  storageRef: string;
+  downloadUrl: string;
+}
+
 export interface Notebook {
   name: string;
   description: string;

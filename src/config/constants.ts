@@ -105,3 +105,37 @@ export const PING_FUNCTION_URL = `${FUNCTIONS_BASE_URL}/ping`;
 // System status warm-up
 export const WARMUP_TIMEOUT_MS = 900;
 export const WARM_THRESHOLD_MS = 200;
+
+// Chat attachments (multimodal)
+export const CHAT_ATTACHMENT_MAX_SIZE = 10 * 1024 * 1024; // 10 MB
+export const MAX_CHAT_ATTACHMENTS = 5;
+
+export const CHAT_ATTACHMENT_TYPES: Record<string, string> = {
+  // Images
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  heic: "image/heic",
+  // Audio
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  ogg: "audio/ogg",
+  m4a: "audio/mp4",
+  aac: "audio/aac",
+  flac: "audio/flac",
+  webm: "audio/webm",
+  // PDF
+  pdf: "application/pdf",
+};
+
+export const CHAT_ATTACHMENT_ACCEPT = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "image/heic",
+  "audio/*",
+  ".pdf",
+].join(",");

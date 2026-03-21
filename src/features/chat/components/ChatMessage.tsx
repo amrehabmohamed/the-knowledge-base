@@ -1,8 +1,8 @@
-import { Bot, FileText } from "lucide-react";
+import { Bot, FileText, Music } from "lucide-react";
 import { Markdown } from "@/components/ui/markdown";
 import { getTextDir } from "@/lib/utils";
 import { CitationMarker } from "./CitationMarker";
-import type { Message, Citation } from "@/types/session";
+import type { Message, Citation, Attachment } from "@/types/session";
 
 interface ChatMessageProps {
   message: Message;
@@ -54,6 +54,43 @@ function renderContentWithCitations(
   );
 }
 
+function AttachmentPreview({ attachment }: { attachment: Attachment }) {
+  if (attachment.type === "image") {
+    return (
+      <img
+        src={attachment.downloadUrl}
+        alt={attachment.fileName}
+        className="max-w-xs max-h-64 rounded-lg object-cover"
+      />
+    );
+  }
+
+  if (attachment.type === "audio") {
+    return (
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center gap-1.5 text-xs text-background/70">
+          <Music className="h-3 w-3" />
+          {attachment.fileName}
+        </div>
+        <audio controls src={attachment.downloadUrl} className="h-8 max-w-[240px]" />
+      </div>
+    );
+  }
+
+  // PDF
+  return (
+    <a
+      href={attachment.downloadUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="flex items-center gap-2 rounded-md bg-background/10 px-2.5 py-1.5 text-xs text-background hover:bg-background/20 transition-colors"
+    >
+      <FileText className="h-4 w-4 shrink-0" />
+      <span className="truncate max-w-[180px]">{attachment.fileName}</span>
+    </a>
+  );
+}
+
 export function ChatMessage({ message }: ChatMessageProps) {
   const isUser = message.role === "user";
   const isSummary = message.role === "summary";
@@ -78,13 +115,23 @@ export function ChatMessage({ message }: ChatMessageProps) {
 
   if (isUser) {
     const dir = getTextDir(message.content);
+    const attachments = message.attachments;
+    const hasAttachments = attachments && attachments.length > 0;
+
     return (
       <div className="flex justify-end">
         <div
           className="max-w-[75%] rounded-2xl rounded-br-sm bg-foreground px-4 py-2.5 text-sm text-background"
           dir={dir}
         >
-          {message.content}
+          {hasAttachments && (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {attachments.map((att, i) => (
+                <AttachmentPreview key={i} attachment={att} />
+              ))}
+            </div>
+          )}
+          {message.content && <span>{message.content}</span>}
         </div>
       </div>
     );

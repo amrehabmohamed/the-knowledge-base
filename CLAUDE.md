@@ -101,6 +101,13 @@ firebase deploy --only firestore:rules,firestore:indexes  # Deploy rules + index
 - Default tool is always FileSearch (uploaded sources); slash commands override to a specific web tool for that message only
 - Per-notebook tool toggles stored as `tools` field on notebook doc (e.g. `{ googleSearch: true }`) — controls which tools are available but slash commands are the actual trigger
 - Frontend slash command menu: typing `/` in chat input shows a popup menu (ChatInput.tsx) with keyboard navigation
+- Multimodal chat: users can attach images, audio, and PDFs in chat messages (web + Telegram)
+- Chat attachments stored in Cloud Storage at `users/{uid}/chat-attachments/{notebookId}/{sessionId}/`
+- Attachment metadata stored on message doc as `attachments?: Attachment[]` (type, mimeType, fileName, sizeBytes, storageRef, downloadUrl)
+- Gemini multimodal: attachments sent as `inlineData` parts alongside text in the user message; history remains text-only
+- Chat function memory bumped to 512MiB to handle file download + base64 encoding
+- Telegram media: photos, voice messages, audio files, and PDF documents → downloaded via Bot API → uploaded to Cloud Storage → passed to Gemini
+- Max chat attachment size: 10MB per file, max 5 attachments per message
 
 ## Build Status
 
@@ -110,6 +117,7 @@ firebase deploy --only firestore:rules,firestore:indexes  # Deploy rules + index
 - **Phase 1C**: Complete (summarization, archive, system status/warm-up, per-notebook system prompt, token counting, RTL support, chat layout redesign, Netlify deployment)
 - **Phase 2**: Complete (Telegram bot — email OTP linking, notebook/model selection, session management, rate limiting, channel-aware prompts, location support, HTML formatting)
 - **Phase 3**: Complete (Web tools — Google Search, Google Maps, URL Context via slash commands /web /maps /url, per-notebook tool settings, slash command menu in web UI)
+- **Phase 4**: Complete (Multimodal chat — image/audio/PDF attachments in web and Telegram, Gemini native vision/audio understanding)
 
 ## Full Requirements
 

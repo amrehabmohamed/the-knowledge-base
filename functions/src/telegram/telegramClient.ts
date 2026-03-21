@@ -34,6 +34,35 @@ async function callApi<T>(method: string, body: Record<string, unknown>): Promis
   return res.json() as Promise<ApiResponse<T>>;
 }
 
+interface TelegramFile {
+  file_id: string;
+  file_unique_id: string;
+  file_size?: number;
+  file_path?: string;
+}
+
+/**
+ * Downloads a file from Telegram servers by file_id.
+ */
+export async function downloadTelegramFile(
+  fileId: string
+): Promise<{ buffer: Buffer; filePath: string }> {
+  const fileInfo = await callApi<TelegramFile>("getFile", { file_id: fileId });
+  const filePath = fileInfo.result.file_path;
+  if (!filePath) {
+    throw new Error("Telegram getFile returned no file_path");
+  }
+
+  const url = `https://api.telegram.org/file/bot${getTelegramBotToken()}/${filePath}`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to download Telegram file: ${response.status}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  return { buffer: Buffer.from(arrayBuffer), filePath };
+}
+
 export async function sendMessage(
   chatId: number,
   text: string,

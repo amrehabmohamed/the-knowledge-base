@@ -5,8 +5,10 @@ import { streamChat } from "@/lib/streaming";
 import { useSession } from "./useSession";
 import { useMessages } from "./useMessages";
 import { useSystemStatusContext } from "@/features/settings";
+import { uploadChatAttachment } from "@/features/chat/services/attachmentService";
+import { auth } from "@/lib/firebase";
 import type { Source } from "@/types/source";
-import type { Citation } from "@/types/session";
+import type { Citation, Attachment } from "@/types/session";
 
 export function useChat(notebookId: string, sources: Source[]) {
   const { session, loading: sessionLoading, archiveSession, createSession, updateModel } =
@@ -29,8 +31,10 @@ export function useChat(notebookId: string, sources: Source[]) {
     (s) => s.status === "ready" && s.geminiDocId
   );
 
+  const [uploading, setUploading] = useState(false);
+
   const sendMessage = useCallback(
-    async (query: string) => {
+    async (query: string, files?: File[]) => {
       if (streaming || !session || readySources.length === 0) return;
 
       // Parse slash commands: /web, /maps, /url
@@ -56,6 +60,32 @@ export function useChat(notebookId: string, sources: Source[]) {
       startTimeRef.current = Date.now();
       ttftRef.current = null;
 
+      // Upload attachments to Cloud Storage first
+      let attachments: Attachment[] | undefined;
+      if (files?.length) {
+        const userId = auth.currentUser?.uid;
+        if (!userId) {
+          setError("Not authenticated.");
+          setStreaming(false);
+          return;
+        }
+        setUploading(true);
+        try {
+          attachments = await Promise.all(
+            files.map((file) =>
+              uploadChatAttachment(file, userId, notebookId, session.id)
+            )
+          );
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : "Upload failed";
+          setError(`Attachment upload failed: ${msg}`);
+          setStreaming(false);
+          setUploading(false);
+          return;
+        }
+        setUploading(false);
+      }
+
       const messagesCol = getMessagesCollection(notebookId, session.id);
 
       // Write user message (store original query with command prefix)
@@ -68,6 +98,7 @@ export function useChat(notebookId: string, sources: Source[]) {
         modelId: null,
         agentType: toolOverride ?? "filesearch",
         metrics: null,
+        attachments: attachments ?? null,
         createdAt: serverTimestamp(),
       });
       await updateDoc(getSessionRef(notebookId, session.id), {
@@ -99,6 +130,12 @@ export function useChat(notebookId: string, sources: Source[]) {
             history,
             sessionId: session.id,
             toolOverride,
+            attachments: attachments?.map((a) => ({
+              storageRef: a.storageRef,
+              mimeType: a.mimeType,
+              fileName: a.fileName,
+              sizeBytes: a.sizeBytes,
+            })),
           },
           {
             onToken: (text) => {
@@ -174,6 +211,7 @@ export function useChat(notebookId: string, sources: Source[]) {
     session,
     messages,
     streaming,
+    uploading,
     streamingContent,
     streamingCitations,
     error,

@@ -348,7 +348,7 @@ export const deleteSource = onCall(async (request) => {
  * Uses SSE (Server-Sent Events) for real-time token streaming.
  */
 export const chat = onRequest(
-  { cors: true, timeoutSeconds: 300 },
+  { cors: true, timeoutSeconds: 300, memory: "512MiB" },
   async (req, res) => {
     // Warmup ping — skip auth and processing
     if (req.method === "GET" || req.body?.warmup === true) {
@@ -370,9 +370,11 @@ export const chat = onRequest(
       return;
     }
 
-    const { notebookId, query, modelId, history, sessionId, toolOverride } = req.body;
+    const { notebookId, query: rawQuery, modelId, history, sessionId, toolOverride, attachments } = req.body;
+    const query = rawQuery ?? "";
+    const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
 
-    if (!notebookId || !query) {
+    if (!notebookId || (!query && !hasAttachments)) {
       res.status(400).json({ error: "Missing required fields." });
       return;
     }
@@ -499,14 +501,15 @@ export const chat = onRequest(
 
     try {
       const stream = queryWithFileSearch(
-        query,
+        query ?? "",
         chatHistory,
         notebookId,
         modelId ?? "gemini-3-flash",
         customSystemPrompt,
         "web",
         notebookTools,
-        toolOverride
+        toolOverride,
+        attachments
       );
 
       for await (const chunk of stream) {

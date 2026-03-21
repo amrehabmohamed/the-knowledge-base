@@ -51,23 +51,30 @@ async function processUpdate(update: TelegramUpdate): Promise<void> {
 
   const chatId = message.chat.id;
 
-  // Extract text from message — handle locations as text
-  let text = message.text?.trim() ?? "";
-  if (!text && message.location) {
-    text = `My location is: ${message.location.latitude}, ${message.location.longitude}`;
-  }
-  if (!text) return;
-
   // Only support private chats
   if (message.chat.type !== "private") return;
 
+  // Extract text from message — handle locations as text
+  let text = message.text?.trim() ?? message.caption?.trim() ?? "";
+  if (!text && message.location) {
+    text = `My location is: ${message.location.latitude}, ${message.location.longitude}`;
+  }
+
+  // Check if message has media (photo, voice, audio, document)
+  const hasMedia = !!(message.photo || message.voice || message.audio || message.document);
+
+  // If no text and no media, skip
+  if (!text && !hasMedia) return;
+
   try {
-    // Check if user is in a multi-step linking flow
-    const handledByLinking = await handleLinkingInput(chatId, text);
-    if (handledByLinking) return;
+    // Check if user is in a multi-step linking flow (text-only)
+    if (text) {
+      const handledByLinking = await handleLinkingInput(chatId, text);
+      if (handledByLinking) return;
+    }
 
     // Route commands (but let /web, /maps, /url pass through to chat handler)
-    if (text.startsWith("/")) {
+    if (text.startsWith("/") && !hasMedia) {
       const chatToolCommands = ["/web ", "/maps ", "/url "];
       const isChatTool = chatToolCommands.some((cmd) => text.toLowerCase().startsWith(cmd));
       if (!isChatTool) {
@@ -76,8 +83,8 @@ async function processUpdate(update: TelegramUpdate): Promise<void> {
       }
     }
 
-    // Chat query (including /web, /maps, /url tool commands)
-    await handleChatMessage(chatId, text);
+    // Chat query (text, media, or both)
+    await handleChatMessage(chatId, message);
   } catch (err) {
     console.error(`[TELEGRAM] Error handling message from ${chatId}:`, err);
     try {
