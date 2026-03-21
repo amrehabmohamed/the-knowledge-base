@@ -144,6 +144,105 @@ function buildSystemPrompt(
   return prompt;
 }
 
+/**
+ * Extracts citations from Gemini's groundingMetadata in the last response chunk.
+ */
+function extractCitations(lastChunk: Record<string, unknown> | null): {
+  citations: ChatCitation[];
+  totalTokens: number;
+} {
+  const usageMetadata = lastChunk?.usageMetadata as Record<string, unknown> | undefined;
+  const totalTokens = (usageMetadata?.totalTokenCount as number) ?? 0;
+
+  const citations: ChatCitation[] = [];
+
+  try {
+    const candidates = lastChunk?.candidates as Array<Record<string, unknown>> | undefined;
+    const candidate = candidates?.[0];
+
+    const content = candidate?.content as Record<string, unknown> | undefined;
+    const parts = content?.parts as Array<Record<string, unknown>> | undefined;
+    if (parts) {
+      console.log(`[CHAT] Response parts count: ${parts.length}`);
+      for (let i = 0; i < parts.length; i++) {
+        const partKeys = Object.keys(parts[i]);
+        console.log(`[CHAT] Part ${i} keys: ${partKeys.join(", ")}`);
+        if (parts[i].executableCode) {
+          console.log(`[CHAT] Part ${i} executableCode: ${JSON.stringify(parts[i].executableCode)}`);
+        }
+      }
+    }
+
+    const grounding = candidate?.groundingMetadata as Record<string, unknown> | undefined;
+    console.log(`[CHAT] groundingMetadata present: ${!!grounding}`);
+    if (grounding) {
+      console.log(`[CHAT] groundingMetadata keys: ${Object.keys(grounding).join(", ")}`);
+    }
+
+    const groundingChunks = grounding?.groundingChunks as Array<Record<string, unknown>> | undefined;
+    const groundingSupports = grounding?.groundingSupports as Array<Record<string, unknown>> | undefined;
+
+    console.log(`[CHAT] groundingChunks: ${groundingChunks?.length ?? 0}`);
+    console.log(`[CHAT] groundingSupports: ${groundingSupports?.length ?? 0}`);
+
+    if (groundingChunks && groundingSupports) {
+      groundingSupports.forEach((support: Record<string, unknown>) => {
+        const chunkIndices = (support.groundingChunkIndices as number[]) ?? [];
+        const segment = support.segment as Record<string, unknown> | undefined;
+        const chunkText = (segment?.text as string) ?? "";
+
+        for (const chunkIdx of chunkIndices) {
+          const chunk = groundingChunks[chunkIdx];
+
+          // FileSearch citations (uploaded documents)
+          const retrieved = chunk?.retrievedContext as Record<string, unknown> | undefined;
+          if (retrieved) {
+            console.log(`[CHAT] Citation found: uri=${retrieved.uri}, title=${retrieved.title}`);
+            citations.push({
+              index: citations.length + 1,
+              sourceId: (retrieved.uri as string) ?? "",
+              sourceName: (retrieved.title as string) ?? `Source ${chunkIdx + 1}`,
+              chunkText,
+              type: "source",
+            });
+            continue;
+          }
+
+          // Web citations (Google Search / URL Context / Maps)
+          const web = chunk?.web as { uri?: string; title?: string } | undefined;
+          if (web?.uri) {
+            console.log(`[CHAT] Web citation found: uri=${web.uri}, title=${web.title}`);
+            citations.push({
+              index: citations.length + 1,
+              sourceId: web.uri,
+              sourceName: web.title ?? "Web source",
+              chunkText,
+              type: "web",
+              url: web.uri,
+            });
+          }
+        }
+      });
+    }
+  } catch (err) {
+    console.error(`[CHAT] Error extracting citations:`, err);
+  }
+
+  console.log(`[CHAT] Total citations: ${citations.length}`);
+  return { citations, totalTokens };
+}
+
+/**
+ * Determines which extra web tool to use for the fallback pass.
+ * Priority: googleSearch > urlContext > googleMaps (only one at a time).
+ */
+function getWebTool(enabledTools: Record<string, boolean>): Record<string, unknown> | null {
+  if (enabledTools.googleSearch) return { googleSearch: {} };
+  if (enabledTools.urlContext) return { urlContext: {} };
+  if (enabledTools.googleMaps) return { googleMaps: {} };
+  return null;
+}
+
 export async function* queryWithFileSearch(
   query: string,
   history: Array<{ role: string; content: string }>,
@@ -179,11 +278,10 @@ export async function* queryWithFileSearch(
     parts: [{ text: query }],
   });
 
-  // Build tools array — FileSearch is always included, others are per-notebook toggles
-  // IMPORTANT: Gemini 2.5 models cannot combine multiple built-in tools.
-  // Tool combination (fileSearch + googleSearch etc.) only works on Gemini 3 models.
-  const isGemini3 = apiModel.startsWith("gemini-3");
-  const tools: Array<Record<string, unknown>> = [
+  const systemInstruction = buildSystemPrompt(customSystemPrompt, channel, enabledTools);
+
+  // --- Pass 1: FileSearch (always) ---
+  const fileSearchTools: Array<Record<string, unknown>> = [
     {
       fileSearch: {
         fileSearchStoreNames: [storeId],
@@ -191,153 +289,97 @@ export async function* queryWithFileSearch(
       },
     },
   ];
+  console.log(`[CHAT] Pass 1 (FileSearch): ${JSON.stringify(fileSearchTools)}`);
 
-  if (isGemini3) {
-    if (enabledTools.googleSearch) tools.push({ googleSearch: {} });
-    if (enabledTools.googleMaps) tools.push({ googleMaps: {} });
-    if (enabledTools.urlContext) tools.push({ urlContext: {} });
-  } else if (enabledTools.googleSearch || enabledTools.googleMaps || enabledTools.urlContext) {
-    console.log(`[CHAT] Skipping extra tools — ${apiModel} does not support tool combination with fileSearch`);
+  const webTool = getWebTool(enabledTools);
+  // If no web tools enabled, stream directly (no fallback needed)
+  // If web tools enabled, collect Pass 1 text to check for citations first
+  const needsFallback = webTool !== null;
+
+  if (!needsFallback) {
+    // Simple path: FileSearch only, stream directly
+    const response = await client.models.generateContentStream({
+      model: apiModel,
+      contents,
+      config: { systemInstruction, tools: fileSearchTools },
+    });
+
+    let lastChunk: Record<string, unknown> | null = null;
+    let chunkCount = 0;
+    for await (const chunk of response) {
+      const text = chunk.text ?? "";
+      if (text) {
+        chunkCount++;
+        yield { type: "token", text };
+      }
+      lastChunk = chunk as unknown as Record<string, unknown>;
+    }
+
+    const { citations, totalTokens } = extractCitations(lastChunk);
+    console.log(`[CHAT] Stream complete. Chunks: ${chunkCount}, Tokens: ${totalTokens}`);
+    if (citations.length > 0) yield { type: "citations", citations };
+    yield { type: "done", totalTokens };
+    return;
   }
 
-  // When combining multiple built-in tools, includeServerSideToolInvocations is required
-  const hasExtraTools = tools.length > 1;
-  console.log(`[CHAT] tools config (${tools.length} tools, serverSide=${hasExtraTools}): ${JSON.stringify(tools)}`);
+  // Two-pass path: try FileSearch first, fallback to web tool if no citations
+  console.log(`[CHAT] Two-pass mode — will fallback to ${JSON.stringify(webTool)} if no FileSearch citations`);
 
-  const response = await client.models.generateContentStream({
+  const pass1Response = await client.models.generateContentStream({
     model: apiModel,
     contents,
-    config: {
-      systemInstruction: buildSystemPrompt(customSystemPrompt, channel, enabledTools),
-      tools,
-      ...(hasExtraTools && { toolConfig: { includeServerSideToolInvocations: true } }),
-    },
+    config: { systemInstruction, tools: fileSearchTools },
   });
 
-  let lastChunk: Record<string, unknown> | null = null;
-  let chunkCount = 0;
-
-  for await (const chunk of response) {
+  let pass1LastChunk: Record<string, unknown> | null = null;
+  let pass1Text = "";
+  let pass1ChunkCount = 0;
+  for await (const chunk of pass1Response) {
     const text = chunk.text ?? "";
     if (text) {
-      chunkCount++;
+      pass1ChunkCount++;
+      pass1Text += text;
+    }
+    pass1LastChunk = chunk as unknown as Record<string, unknown>;
+  }
+
+  const pass1Result = extractCitations(pass1LastChunk);
+  console.log(`[CHAT] Pass 1 complete. Chunks: ${pass1ChunkCount}, Citations: ${pass1Result.citations.length}`);
+
+  if (pass1Result.citations.length > 0) {
+    // FileSearch found relevant sources — use Pass 1 results
+    console.log(`[CHAT] FileSearch had citations, using Pass 1 result`);
+    yield { type: "token", text: pass1Text };
+    yield { type: "citations", citations: pass1Result.citations };
+    yield { type: "done", totalTokens: pass1Result.totalTokens };
+    return;
+  }
+
+  // --- Pass 2: Web tool fallback (no FileSearch citations found) ---
+  console.log(`[CHAT] No FileSearch citations — running Pass 2 with ${JSON.stringify(webTool)}`);
+
+  const pass2Response = await client.models.generateContentStream({
+    model: apiModel,
+    contents,
+    config: { systemInstruction, tools: [webTool] },
+  });
+
+  let pass2LastChunk: Record<string, unknown> | null = null;
+  let pass2ChunkCount = 0;
+  for await (const chunk of pass2Response) {
+    const text = chunk.text ?? "";
+    if (text) {
+      pass2ChunkCount++;
       yield { type: "token", text };
     }
-    lastChunk = chunk as unknown as Record<string, unknown>;
+    pass2LastChunk = chunk as unknown as Record<string, unknown>;
   }
 
-  // Extract real token usage from Gemini's usageMetadata
-  const usageMetadata = lastChunk?.usageMetadata as
-    | Record<string, unknown>
-    | undefined;
-  const totalTokens =
-    (usageMetadata?.totalTokenCount as number) ?? 0;
-  const promptTokens =
-    (usageMetadata?.promptTokenCount as number) ?? 0;
-  const candidateTokens =
-    (usageMetadata?.candidatesTokenCount as number) ?? 0;
+  const pass2Result = extractCitations(pass2LastChunk);
+  console.log(`[CHAT] Pass 2 complete. Chunks: ${pass2ChunkCount}, Citations: ${pass2Result.citations.length}`);
 
-  console.log(`[CHAT] Stream complete. Chunks: ${chunkCount}, Tokens: prompt=${promptTokens} candidate=${candidateTokens} total=${totalTokens}`);
-
-  // Log raw last chunk for debugging
-  try {
-    const candidates = (lastChunk as Record<string, unknown>)?.candidates as
-      | Array<Record<string, unknown>>
-      | undefined;
-    const candidate = candidates?.[0];
-
-    // Log all parts to see executableCode and other non-text parts
-    const content = candidate?.content as Record<string, unknown> | undefined;
-    const parts = content?.parts as Array<Record<string, unknown>> | undefined;
-    if (parts) {
-      console.log(`[CHAT] Response parts count: ${parts.length}`);
-      for (let i = 0; i < parts.length; i++) {
-        const partKeys = Object.keys(parts[i]);
-        console.log(`[CHAT] Part ${i} keys: ${partKeys.join(", ")}`);
-        if (parts[i].executableCode) {
-          console.log(`[CHAT] Part ${i} executableCode: ${JSON.stringify(parts[i].executableCode)}`);
-        }
-      }
-    }
-
-    const grounding = candidate?.groundingMetadata as
-      | Record<string, unknown>
-      | undefined;
-
-    console.log(`[CHAT] groundingMetadata present: ${!!grounding}`);
-    if (grounding) {
-      console.log(`[CHAT] groundingMetadata keys: ${Object.keys(grounding).join(", ")}`);
-    }
-
-    const groundingChunks = grounding?.groundingChunks as
-      | Array<Record<string, unknown>>
-      | undefined;
-    const groundingSupports = grounding?.groundingSupports as
-      | Array<Record<string, unknown>>
-      | undefined;
-
-    console.log(`[CHAT] groundingChunks: ${groundingChunks?.length ?? 0}`);
-    console.log(`[CHAT] groundingSupports: ${groundingSupports?.length ?? 0}`);
-
-    // Extract citations from grounding metadata
-    const citations: ChatCitation[] = [];
-
-    if (groundingChunks && groundingSupports) {
-      groundingSupports.forEach((support: Record<string, unknown>) => {
-        const chunkIndices =
-          (support.groundingChunkIndices as number[]) ?? [];
-        const segment = support.segment as
-          | Record<string, unknown>
-          | undefined;
-        const chunkText = (segment?.text as string) ?? "";
-
-        for (const chunkIdx of chunkIndices) {
-          const chunk = groundingChunks[chunkIdx];
-
-          // FileSearch citations (uploaded documents)
-          const retrieved = chunk?.retrievedContext as
-            | Record<string, unknown>
-            | undefined;
-          if (retrieved) {
-            console.log(`[CHAT] Citation found: uri=${retrieved.uri}, title=${retrieved.title}`);
-            citations.push({
-              index: citations.length + 1,
-              sourceId: (retrieved.uri as string) ?? "",
-              sourceName:
-                (retrieved.title as string) ?? `Source ${chunkIdx + 1}`,
-              chunkText,
-              type: "source",
-            });
-            continue;
-          }
-
-          // Web citations (Google Search / URL Context / Maps)
-          const web = chunk?.web as
-            | { uri?: string; title?: string }
-            | undefined;
-          if (web?.uri) {
-            console.log(`[CHAT] Web citation found: uri=${web.uri}, title=${web.title}`);
-            citations.push({
-              index: citations.length + 1,
-              sourceId: web.uri,
-              sourceName: web.title ?? "Web source",
-              chunkText,
-              type: "web",
-              url: web.uri,
-            });
-          }
-        }
-      });
-    }
-
-    console.log(`[CHAT] Total citations: ${citations.length}`);
-
-    if (citations.length > 0) {
-      yield { type: "citations", citations };
-    }
-  } catch (err) {
-    console.error(`[CHAT] Error extracting citations:`, err);
+  if (pass2Result.citations.length > 0) {
+    yield { type: "citations", citations: pass2Result.citations };
   }
-
-  yield { type: "done", totalTokens };
+  yield { type: "done", totalTokens: pass1Result.totalTokens + pass2Result.totalTokens };
 }
