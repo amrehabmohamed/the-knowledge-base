@@ -370,7 +370,7 @@ export const chat = onRequest(
       return;
     }
 
-    const { notebookId, query, modelId, history, sessionId } = req.body;
+    const { notebookId, query, modelId, history, sessionId, toolOverride } = req.body;
 
     if (!notebookId || !query) {
       res.status(400).json({ error: "Missing required fields." });
@@ -505,7 +505,8 @@ export const chat = onRequest(
         modelId ?? "gemini-3-flash",
         customSystemPrompt,
         "web",
-        notebookTools
+        notebookTools,
+        toolOverride
       );
 
       for await (const chunk of stream) {

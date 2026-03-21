@@ -33,6 +33,22 @@ export function useChat(notebookId: string, sources: Source[]) {
     async (query: string) => {
       if (streaming || !session || readySources.length === 0) return;
 
+      // Parse slash commands: /web, /maps, /url
+      const SLASH_COMMANDS: Record<string, string> = {
+        "/web ": "googleSearch",
+        "/maps ": "googleMaps",
+        "/url ": "urlContext",
+      };
+      let toolOverride: string | undefined;
+      let actualQuery = query;
+      for (const [prefix, tool] of Object.entries(SLASH_COMMANDS)) {
+        if (query.toLowerCase().startsWith(prefix)) {
+          toolOverride = tool;
+          actualQuery = query.slice(prefix.length).trim();
+          break;
+        }
+      }
+
       setError(null);
       setStreaming(true);
       setStreamingContent("");
@@ -42,7 +58,7 @@ export function useChat(notebookId: string, sources: Source[]) {
 
       const messagesCol = getMessagesCollection(notebookId, session.id);
 
-      // Write user message
+      // Write user message (store original query with command prefix)
       await addDoc(messagesCol, {
         sessionId: session.id,
         role: "user",
@@ -50,7 +66,7 @@ export function useChat(notebookId: string, sources: Source[]) {
         citations: null,
         tokenCount: 0,
         modelId: null,
-        agentType: "filesearch",
+        agentType: toolOverride ?? "filesearch",
         metrics: null,
         createdAt: serverTimestamp(),
       });
@@ -78,10 +94,11 @@ export function useChat(notebookId: string, sources: Source[]) {
         await streamChat(
           {
             notebookId,
-            query,
+            query: actualQuery,
             modelId: session.modelId,
             history,
             sessionId: session.id,
+            toolOverride,
           },
           {
             onToken: (text) => {
@@ -120,7 +137,7 @@ export function useChat(notebookId: string, sources: Source[]) {
             citations: finalCitations.length > 0 ? finalCitations : null,
             tokenCount: metricsData?.tokenCount ?? 0,
             modelId: session.modelId,
-            agentType: "filesearch",
+            agentType: toolOverride ?? "filesearch",
             metrics: {
               ttftMs: metricsData?.ttftMs ?? clientTtft,
               totalMs: metricsData?.totalMs ?? clientTotal,

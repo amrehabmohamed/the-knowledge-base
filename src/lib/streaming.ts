@@ -20,6 +20,7 @@ interface ChatParams {
   modelId: string;
   history: Array<{ role: string; content: string }>;
   sessionId?: string;
+  toolOverride?: string;
 }
 
 /**

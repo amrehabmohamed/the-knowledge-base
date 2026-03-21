@@ -149,12 +149,10 @@ function buildSystemPrompt(
 
 /**
  * Extracts citations from Gemini's groundingMetadata in the last response chunk.
- * Also returns whether grounding was used (even if chunks are empty — Gemini 3 bug).
  */
 function extractCitations(lastChunk: Record<string, unknown> | null): {
   citations: ChatCitation[];
   totalTokens: number;
-  wasGrounded: boolean;
 } {
   const usageMetadata = lastChunk?.usageMetadata as Record<string, unknown> | undefined;
   const totalTokens = (usageMetadata?.totalTokenCount as number) ?? 0;
@@ -172,17 +170,11 @@ function extractCitations(lastChunk: Record<string, unknown> | null): {
       for (let i = 0; i < parts.length; i++) {
         const partKeys = Object.keys(parts[i]);
         console.log(`[CHAT] Part ${i} keys: ${partKeys.join(", ")}`);
-        if (parts[i].executableCode) {
-          console.log(`[CHAT] Part ${i} executableCode: ${JSON.stringify(parts[i].executableCode)}`);
-        }
       }
     }
 
     const grounding = candidate?.groundingMetadata as Record<string, unknown> | undefined;
     console.log(`[CHAT] groundingMetadata present: ${!!grounding}`);
-    if (grounding) {
-      console.log(`[CHAT] groundingMetadata keys: ${Object.keys(grounding).join(", ")}`);
-    }
 
     const groundingChunks = grounding?.groundingChunks as Array<Record<string, unknown>> | undefined;
     const groundingSupports = grounding?.groundingSupports as Array<Record<string, unknown>> | undefined;
@@ -233,26 +225,16 @@ function extractCitations(lastChunk: Record<string, unknown> | null): {
     console.error(`[CHAT] Error extracting citations:`, err);
   }
 
-  // Detect if grounding was used — even if chunks are empty (Gemini 3 bug returns {} chunks)
-  const candidates = lastChunk?.candidates as Array<Record<string, unknown>> | undefined;
-  const grounding = candidates?.[0]?.groundingMetadata as Record<string, unknown> | undefined;
-  const groundingChunks = grounding?.groundingChunks as Array<unknown> | undefined;
-  const wasGrounded = (groundingChunks?.length ?? 0) > 0;
-
-  console.log(`[CHAT] Total citations: ${citations.length}, wasGrounded: ${wasGrounded}`);
-  return { citations, totalTokens, wasGrounded };
+  console.log(`[CHAT] Total citations: ${citations.length}`);
+  return { citations, totalTokens };
 }
 
-/**
- * Determines which extra web tool to use for the fallback pass.
- * Priority: googleSearch > urlContext > googleMaps (only one at a time).
- */
-function getWebTool(enabledTools: Record<string, boolean>): Record<string, unknown> | null {
-  if (enabledTools.googleSearch) return { googleSearch: {} };
-  if (enabledTools.urlContext) return { urlContext: {} };
-  if (enabledTools.googleMaps) return { googleMaps: {} };
-  return null;
-}
+/** Valid tool override values from slash commands */
+const TOOL_OVERRIDES: Record<string, Record<string, unknown>> = {
+  googleSearch: { googleSearch: {} },
+  urlContext: { urlContext: {} },
+  googleMaps: { googleMaps: {} },
+};
 
 export async function* queryWithFileSearch(
   query: string,
@@ -261,7 +243,8 @@ export async function* queryWithFileSearch(
   modelId: string,
   customSystemPrompt?: string,
   channel: "web" | "telegram" = "web",
-  enabledTools: Record<string, boolean> = {}
+  enabledTools: Record<string, boolean> = {},
+  toolOverride?: string
 ): AsyncGenerator<ChatChunk> {
   const client = getClient();
   const storeId = getGeminiStoreId();
@@ -275,6 +258,7 @@ export async function* queryWithFileSearch(
   console.log(`[CHAT] metadataFilter=${metadataFilter}`);
   console.log(`[CHAT] query="${query}"`);
   console.log(`[CHAT] history length=${history.length}`);
+  console.log(`[CHAT] toolOverride=${toolOverride ?? "none"}`);
 
   // Build conversation history
   const contents: Content[] = [];
@@ -289,111 +273,44 @@ export async function* queryWithFileSearch(
     parts: [{ text: query }],
   });
 
+  // Determine which tool to use:
+  // - toolOverride (from /web, /maps, /url commands) → use that specific web tool
+  // - default → FileSearch (uploaded sources)
+  const overrideTool = toolOverride ? TOOL_OVERRIDES[toolOverride] : null;
+  const tools: Array<Record<string, unknown>> = overrideTool
+    ? [overrideTool]
+    : [
+        {
+          fileSearch: {
+            fileSearchStoreNames: [storeId],
+            metadataFilter,
+          },
+        },
+      ];
+
   const systemInstruction = buildSystemPrompt(customSystemPrompt, channel, enabledTools);
+  console.log(`[CHAT] tools config: ${JSON.stringify(tools)}`);
 
-  // --- Pass 1: FileSearch (always) ---
-  const fileSearchTools: Array<Record<string, unknown>> = [
-    {
-      fileSearch: {
-        fileSearchStoreNames: [storeId],
-        metadataFilter,
-      },
-    },
-  ];
-  console.log(`[CHAT] Pass 1 (FileSearch): ${JSON.stringify(fileSearchTools)}`);
-
-  const webTool = getWebTool(enabledTools);
-  // If no web tools enabled, stream directly (no fallback needed)
-  // If web tools enabled, collect Pass 1 text to check for citations first
-  const needsFallback = webTool !== null;
-
-  if (!needsFallback) {
-    // Simple path: FileSearch only, stream directly
-    const response = await client.models.generateContentStream({
-      model: apiModel,
-      contents,
-      config: { systemInstruction, tools: fileSearchTools },
-    });
-
-    let lastChunk: Record<string, unknown> | null = null;
-    let chunkCount = 0;
-    for await (const chunk of response) {
-      const text = chunk.text ?? "";
-      if (text) {
-        chunkCount++;
-        yield { type: "token", text };
-      }
-      lastChunk = chunk as unknown as Record<string, unknown>;
-    }
-
-    const { citations, totalTokens } = extractCitations(lastChunk);
-    console.log(`[CHAT] Stream complete. Chunks: ${chunkCount}, Tokens: ${totalTokens}`);
-    if (citations.length > 0) yield { type: "citations", citations };
-    yield { type: "done", totalTokens };
-    return;
-  }
-
-  // Two-pass path: try FileSearch first, fallback to web tool if no citations
-  console.log(`[CHAT] Two-pass mode — will fallback to ${JSON.stringify(webTool)} if no FileSearch citations`);
-
-  const pass1Response = await client.models.generateContentStream({
+  const response = await client.models.generateContentStream({
     model: apiModel,
     contents,
-    config: { systemInstruction, tools: fileSearchTools },
+    config: { systemInstruction, tools },
   });
 
-  let pass1LastChunk: Record<string, unknown> | null = null;
-  let pass1Text = "";
-  let pass1ChunkCount = 0;
-  for await (const chunk of pass1Response) {
+  let lastChunk: Record<string, unknown> | null = null;
+  let chunkCount = 0;
+
+  for await (const chunk of response) {
     const text = chunk.text ?? "";
     if (text) {
-      pass1ChunkCount++;
-      pass1Text += text;
-    }
-    pass1LastChunk = chunk as unknown as Record<string, unknown>;
-  }
-
-  const pass1Result = extractCitations(pass1LastChunk);
-  console.log(`[CHAT] Pass 1 complete. Chunks: ${pass1ChunkCount}, Citations: ${pass1Result.citations.length}, Grounded: ${pass1Result.wasGrounded}`);
-
-  if (pass1Result.wasGrounded) {
-    // FileSearch found relevant sources — use Pass 1 results
-    // Note: Gemini 3 may return empty groundingChunks (known bug) but still grounds correctly
-    console.log(`[CHAT] FileSearch was grounded, using Pass 1 result`);
-    yield { type: "token", text: pass1Text };
-    if (pass1Result.citations.length > 0) {
-      yield { type: "citations", citations: pass1Result.citations };
-    }
-    yield { type: "done", totalTokens: pass1Result.totalTokens };
-    return;
-  }
-
-  // --- Pass 2: Web tool fallback (no FileSearch citations found) ---
-  console.log(`[CHAT] No FileSearch citations — running Pass 2 with ${JSON.stringify(webTool)}`);
-
-  const pass2Response = await client.models.generateContentStream({
-    model: apiModel,
-    contents,
-    config: { systemInstruction, tools: [webTool] },
-  });
-
-  let pass2LastChunk: Record<string, unknown> | null = null;
-  let pass2ChunkCount = 0;
-  for await (const chunk of pass2Response) {
-    const text = chunk.text ?? "";
-    if (text) {
-      pass2ChunkCount++;
+      chunkCount++;
       yield { type: "token", text };
     }
-    pass2LastChunk = chunk as unknown as Record<string, unknown>;
+    lastChunk = chunk as unknown as Record<string, unknown>;
   }
 
-  const pass2Result = extractCitations(pass2LastChunk);
-  console.log(`[CHAT] Pass 2 complete. Chunks: ${pass2ChunkCount}, Citations: ${pass2Result.citations.length}`);
-
-  if (pass2Result.citations.length > 0) {
-    yield { type: "citations", citations: pass2Result.citations };
-  }
-  yield { type: "done", totalTokens: pass1Result.totalTokens + pass2Result.totalTokens };
+  const { citations, totalTokens } = extractCitations(lastChunk);
+  console.log(`[CHAT] Stream complete. Chunks: ${chunkCount}, Tokens: ${totalTokens}`);
+  if (citations.length > 0) yield { type: "citations", citations };
+  yield { type: "done", totalTokens };
 }

@@ -16,6 +16,23 @@ function db() {
   return admin.firestore();
 }
 
+/** Parse /web, /maps, /url slash commands from Telegram messages */
+const TELEGRAM_SLASH_COMMANDS: Record<string, string> = {
+  "/web ": "googleSearch",
+  "/maps ": "googleMaps",
+  "/url ": "urlContext",
+};
+
+function parseSlashCommand(text: string): { query: string; toolOverride?: string } {
+  const lower = text.toLowerCase();
+  for (const [prefix, tool] of Object.entries(TELEGRAM_SLASH_COMMANDS)) {
+    if (lower.startsWith(prefix)) {
+      return { query: text.slice(prefix.length).trim(), toolOverride: tool };
+    }
+  }
+  return { query: text };
+}
+
 export async function handleChatMessage(chatId: number, text: string): Promise<void> {
   // 1. Check link
   const link = await getLink(chatId);
@@ -65,19 +82,23 @@ export async function handleChatMessage(chatId: number, text: string): Promise<v
   const { sessionId, history } = await getOrCreateSession(chatId, link, notebookId);
   const modelId = link.activeModelId || TELEGRAM_DEFAULT_MODEL;
 
+  // Parse slash commands (/web, /maps, /url)
+  const { query: actualQuery, toolOverride } = parseSlashCommand(text);
+
   // Show typing indicator
   await sendChatAction(chatId);
 
   try {
-    // 6. Query with FileSearch
+    // 6. Query with selected tool
     const stream = queryWithFileSearch(
-      text,
+      actualQuery,
       history,
       notebookId,
       modelId,
       customSystemPrompt,
       "telegram",
-      notebookTools
+      notebookTools,
+      toolOverride
     );
 
     // 7. Stream response to Telegram
@@ -98,7 +119,7 @@ export async function handleChatMessage(chatId: number, text: string): Promise<v
       citations: null,
       tokenCount: 0,
       modelId,
-      agentType: "user",
+      agentType: toolOverride ?? "user",
       metrics: null,
       superseded: false,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -111,7 +132,7 @@ export async function handleChatMessage(chatId: number, text: string): Promise<v
       citations: null,
       tokenCount: totalTokens,
       modelId,
-      agentType: "filesearch",
+      agentType: toolOverride ?? "filesearch",
       metrics: null,
       superseded: false,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
