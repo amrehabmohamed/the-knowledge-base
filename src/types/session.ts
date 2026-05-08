@@ -20,6 +20,28 @@ export interface Citation {
   chunkText: string;
   type?: "source" | "web";
   url?: string;
+  via?: "web" | "maps" | "url";
+}
+
+/**
+ * A tool invocation surfaced to the UI — covers Jina URL prefetch and the
+ * orchestrator's sub-agent dispatches (web_search, maps_search, url_fetch).
+ */
+export interface ToolCall {
+  id: string;
+  name: string;
+  /** What was passed to the tool (best-effort: search query, urls, etc.) */
+  args: Record<string, unknown>;
+  status: "running" | "done" | "error";
+  /** Final summary text produced by the tool (when status === "done") */
+  output?: string;
+  /** Citations the tool produced (when status === "done") */
+  citations?: Citation[];
+  /** Error reason (when status === "error") */
+  error?: string;
+  /** Wall-clock duration in ms (set when status transitions to done/error) */
+  durationMs?: number;
+  startedAt: number;
 }
 
 export interface MessageMetrics {
@@ -47,6 +69,7 @@ export interface Message {
   agentType: string;
   metrics: MessageMetrics | null;
   attachments?: Attachment[] | null;
+  toolCalls?: ToolCall[] | null;
   superseded?: boolean;
   createdAt: Timestamp;
 }

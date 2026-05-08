@@ -7,7 +7,15 @@ import {
   SYSTEM_PROMPT,
   CHANNEL_PROMPT_OVERRIDES,
   WEB_TOOLS_PROMPT_ADDON,
+  MULTI_TOOL_ENABLED,
+  getStorageBucketName,
 } from "../config";
+import { orchestrate } from "./orchestrator";
+import {
+  extractUrlsFromText,
+  prefetchUrls,
+  renderPrefetchBlock,
+} from "./urlPrefetch";
 
 let genaiClient: GoogleGenAI | null = null;
 
@@ -33,7 +41,7 @@ export async function uploadToGeminiStore(
   const storeId = getGeminiStoreId();
 
   // Download file from Cloud Storage
-  const bucket = admin.storage().bucket();
+  const bucket = admin.storage().bucket(getStorageBucketName());
   const file = bucket.file(storageRef);
   const [buffer] = await file.download();
 
@@ -114,11 +122,25 @@ export interface ChatCitation {
   chunkText: string;
   type?: "source" | "web";
   url?: string;
+  /** Sub-agent that produced this citation, when not from FileSearch. */
+  via?: "web" | "maps" | "url";
+}
+
+export interface ToolCallEvent {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  status: "running" | "done" | "error";
+  output?: string;
+  citations?: ChatCitation[];
+  error?: string;
+  durationMs?: number;
 }
 
 export type ChatChunk =
   | { type: "token"; text: string }
   | { type: "citations"; citations: ChatCitation[] }
+  | { type: "tool_call"; toolCall: ToolCallEvent }
   | { type: "done"; totalTokens: number };
 
 /**
@@ -250,7 +272,7 @@ export interface ChatAttachment {
 async function prepareMultimodalParts(
   attachments: ChatAttachment[]
 ): Promise<Array<{ inlineData: { mimeType: string; data: string } }>> {
-  const bucket = admin.storage().bucket();
+  const bucket = admin.storage().bucket(getStorageBucketName());
   const parts: Array<{ inlineData: { mimeType: string; data: string } }> = [];
 
   for (const att of attachments) {
@@ -309,6 +331,47 @@ export async function* queryWithFileSearch(
     const mediaParts = await prepareMultimodalParts(attachments);
     userParts.push(...mediaParts);
   }
+  // Pre-fetch any URLs the user pasted (Jina Reader). Same behavior as the
+  // orchestrator path so this works on Gemini 2.5 too.
+  const userUrls = extractUrlsFromText(query);
+  if (userUrls.length > 0) {
+    const prefetchId = `prefetch_${Date.now()}`;
+    const prefetchStart = Date.now();
+    console.log(`[CHAT] prefetching ${userUrls.length} URL(s) via Jina`);
+    yield {
+      type: "tool_call",
+      toolCall: {
+        id: prefetchId,
+        name: "url_prefetch",
+        args: { urls: userUrls },
+        status: "running",
+      },
+    };
+    const fetched = await prefetchUrls(userUrls);
+    const okCount = fetched.filter((r) => r.ok).length;
+    console.log(`[CHAT] prefetch results: ${okCount}/${fetched.length} ok`);
+    const block = renderPrefetchBlock(fetched);
+    if (block) userParts.push({ text: block });
+    yield {
+      type: "tool_call",
+      toolCall: {
+        id: prefetchId,
+        name: "url_prefetch",
+        args: { urls: userUrls },
+        status: okCount > 0 ? "done" : "error",
+        output: fetched
+          .map(
+            (r) =>
+              `${r.ok ? "✓" : "✗"} ${r.url}${r.title ? ` — ${r.title}` : ""}${
+                r.error ? ` (${r.error})` : ""
+              }${r.markdown ? "\n\n" + r.markdown.slice(0, 1500) + (r.markdown.length > 1500 ? "\n[…]" : "") : ""}`
+          )
+          .join("\n\n---\n\n"),
+        durationMs: Date.now() - prefetchStart,
+        error: okCount === 0 ? "all URLs failed" : undefined,
+      },
+    };
+  }
   if (query) {
     userParts.push({ text: query });
   }
@@ -354,4 +417,63 @@ export async function* queryWithFileSearch(
   console.log(`[CHAT] Stream complete. Chunks: ${chunkCount}, Tokens: ${totalTokens}`);
   if (citations.length > 0) yield { type: "citations", citations };
   yield { type: "done", totalTokens };
+}
+
+/** True for any Gemini 3 family model id (preview or stable). */
+export function isGemini3(apiModelId: string): boolean {
+  return /^gemini-3/i.test(apiModelId);
+}
+
+/**
+ * Picks orchestrator vs legacy single-tool path. Same SSE event shape either way.
+ *
+ * Orchestrator runs only when:
+ *  - MULTI_TOOL_ENABLED=true
+ *  - the resolved API model is Gemini 3
+ *  - no slash-command toolOverride is set (slash commands stay as the
+ *    explicit single-tool fast path)
+ */
+export function routeChat(
+  query: string,
+  history: Array<{ role: string; content: string }>,
+  notebookId: string,
+  modelId: string,
+  customSystemPrompt?: string,
+  channel: "web" | "telegram" = "web",
+  enabledTools: Record<string, boolean> = {},
+  toolOverride?: string,
+  attachments?: ChatAttachment[]
+): AsyncGenerator<ChatChunk> {
+  const apiModel = GEMINI_MODELS[modelId] || "gemini-2.5-flash";
+  const useOrchestrator =
+    MULTI_TOOL_ENABLED && !toolOverride && isGemini3(apiModel);
+
+  console.log(
+    `[ROUTE] model=${apiModel} flag=${MULTI_TOOL_ENABLED} override=${toolOverride ?? "none"} → ${
+      useOrchestrator ? "orchestrator" : "legacy single-tool"
+    }`
+  );
+
+  if (useOrchestrator) {
+    return orchestrate(
+      query,
+      history,
+      notebookId,
+      modelId,
+      customSystemPrompt,
+      channel,
+      attachments
+    );
+  }
+  return queryWithFileSearch(
+    query,
+    history,
+    notebookId,
+    modelId,
+    customSystemPrompt,
+    channel,
+    enabledTools,
+    toolOverride,
+    attachments
+  );
 }

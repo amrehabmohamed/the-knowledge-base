@@ -18,6 +18,7 @@ export function ChatPanel({ notebookId, sources }: ChatPanelProps) {
     streaming,
     streamingContent,
     streamingCitations,
+    streamingToolCalls,
     error,
     loading,
     readySources,
@@ -65,6 +66,7 @@ export function ChatPanel({ notebookId, sources }: ChatPanelProps) {
           streaming={streaming}
           streamingContent={streamingContent}
           streamingCitations={streamingCitations}
+          streamingToolCalls={streamingToolCalls}
         />
       )}
 

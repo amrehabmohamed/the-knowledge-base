@@ -1,5 +1,17 @@
 {
   "projects": {
-    "default": "the-knowledge-base-82d72"
-  }
+    "default": "the-knowledge-base-82d72",
+    "prod": "the-knowledge-base-82d72",
+    "staging": "the-knowledge-base-staging"
+  },
+  "targets": {
+    "the-knowledge-base-staging": {
+      "storage": {
+        "staging": [
+          "kb-staging-files"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }

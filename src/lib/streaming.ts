@@ -1,10 +1,13 @@
 import { auth } from "./firebase";
 import { CHAT_FUNCTION_URL } from "@/config/constants";
-import type { Citation } from "@/types/session";
+import type { Citation, ToolCall } from "@/types/session";
+
+export type ToolCallEvent = Omit<ToolCall, "startedAt">;
 
 export interface StreamCallbacks {
   onToken: (text: string) => void;
   onCitations: (citations: Citation[]) => void;
+  onToolCall: (event: ToolCallEvent) => void;
   onMetrics: (metrics: {
     ttftMs: number;
     totalMs: number;
@@ -107,6 +110,9 @@ export async function streamChat(
               break;
             case "citations":
               callbacks.onCitations(parsed.citations ?? []);
+              break;
+            case "tool_call":
+              callbacks.onToolCall(parsed as ToolCallEvent);
               break;
             case "metrics":
               callbacks.onMetrics(parsed);

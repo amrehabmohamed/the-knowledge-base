@@ -8,7 +8,24 @@ import { useSystemStatusContext } from "@/features/settings";
 import { uploadChatAttachment } from "@/features/chat/services/attachmentService";
 import { auth } from "@/lib/firebase";
 import type { Source } from "@/types/source";
-import type { Citation, Attachment } from "@/types/session";
+import type { Citation, Attachment, ToolCall } from "@/types/session";
+
+/**
+ * Apply a streamed tool_call event to the running list. New ids append;
+ * existing ids transition status (running → done | error) preserving startedAt.
+ */
+function mergeToolCall(
+  existing: ToolCall[],
+  event: Omit<ToolCall, "startedAt">
+): ToolCall[] {
+  const idx = existing.findIndex((t) => t.id === event.id);
+  if (idx === -1) {
+    return [...existing, { ...event, startedAt: Date.now() }];
+  }
+  const next = existing.slice();
+  next[idx] = { ...next[idx], ...event };
+  return next;
+}
 
 export function useChat(notebookId: string, sources: Source[]) {
   const { session, loading: sessionLoading, archiveSession, createSession, updateModel } =
@@ -22,6 +39,7 @@ export function useChat(notebookId: string, sources: Source[]) {
   const [streaming, setStreaming] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [streamingCitations, setStreamingCitations] = useState<Citation[]>([]);
+  const [streamingToolCalls, setStreamingToolCalls] = useState<ToolCall[]>([]);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const startTimeRef = useRef<number>(0);
@@ -57,6 +75,7 @@ export function useChat(notebookId: string, sources: Source[]) {
       setStreaming(true);
       setStreamingContent("");
       setStreamingCitations([]);
+      setStreamingToolCalls([]);
       startTimeRef.current = Date.now();
       ttftRef.current = null;
 
@@ -119,6 +138,7 @@ export function useChat(notebookId: string, sources: Source[]) {
 
       let finalContent = "";
       let finalCitations: Citation[] = [];
+      let finalToolCalls: ToolCall[] = [];
       let metricsData: { ttftMs: number; totalMs: number; tokenCount: number } | undefined;
 
       try {
@@ -149,6 +169,11 @@ export function useChat(notebookId: string, sources: Source[]) {
               finalCitations = citations;
               setStreamingCitations(citations);
             },
+            onToolCall: (event) => {
+              const updated = mergeToolCall(finalToolCalls, event);
+              finalToolCalls = updated;
+              setStreamingToolCalls(updated);
+            },
             onMetrics: (metrics) => {
               metricsData = metrics;
             },
@@ -172,6 +197,7 @@ export function useChat(notebookId: string, sources: Source[]) {
             role: "assistant",
             content: finalContent,
             citations: finalCitations.length > 0 ? finalCitations : null,
+            toolCalls: finalToolCalls.length > 0 ? finalToolCalls : null,
             tokenCount: metricsData?.tokenCount ?? 0,
             modelId: session.modelId,
             agentType: toolOverride ?? "filesearch",
@@ -214,6 +240,7 @@ export function useChat(notebookId: string, sources: Source[]) {
     uploading,
     streamingContent,
     streamingCitations,
+    streamingToolCalls,
     error,
     loading: sessionLoading || messagesLoading,
     readySources,
