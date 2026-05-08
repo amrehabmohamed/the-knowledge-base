@@ -102,6 +102,8 @@ export const FUNCTIONS_BASE_URL = `https://us-central1-${PROJECT_ID}.cloudfuncti
 export const CHAT_FUNCTION_URL = `${FUNCTIONS_BASE_URL}/chat`;
 export const HEALTH_FUNCTION_URL = `${FUNCTIONS_BASE_URL}/health`;
 export const PING_FUNCTION_URL = `${FUNCTIONS_BASE_URL}/ping`;
+export const CONNECTOR_OAUTH_START_URL = `${FUNCTIONS_BASE_URL}/connectorOAuthStart`;
+export const CONNECTOR_OAUTH_CALLBACK_URL = `${FUNCTIONS_BASE_URL}/connectorOAuthCallback`;
 
 // System status warm-up
 export const WARMUP_TIMEOUT_MS = 900;

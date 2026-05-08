@@ -19,6 +19,8 @@ export function ChatPanel({ notebookId, sources }: ChatPanelProps) {
     streamingContent,
     streamingCitations,
     streamingToolCalls,
+    pendingActions,
+    scopeExpansions,
     error,
     loading,
     readySources,
@@ -67,6 +69,8 @@ export function ChatPanel({ notebookId, sources }: ChatPanelProps) {
           streamingContent={streamingContent}
           streamingCitations={streamingCitations}
           streamingToolCalls={streamingToolCalls}
+          pendingActions={pendingActions}
+          scopeExpansions={scopeExpansions}
         />
       )}
 

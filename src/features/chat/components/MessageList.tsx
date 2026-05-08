@@ -1,6 +1,10 @@
 import { useEffect, useRef } from "react";
 import { ChatMessage, StreamingMessage } from "./ChatMessage";
 import type { Message, Citation, ToolCall } from "@/types/session";
+import type {
+  PendingActionEvent,
+  ScopeExpansionEvent,
+} from "@/lib/connectors";
 
 interface MessageListProps {
   messages: Message[];
@@ -8,6 +12,8 @@ interface MessageListProps {
   streamingContent: string;
   streamingCitations: Citation[];
   streamingToolCalls: ToolCall[];
+  pendingActions?: PendingActionEvent[];
+  scopeExpansions?: ScopeExpansionEvent[];
 }
 
 export function MessageList({
@@ -16,6 +22,8 @@ export function MessageList({
   streamingContent,
   streamingCitations,
   streamingToolCalls,
+  pendingActions,
+  scopeExpansions,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -37,6 +45,8 @@ export function MessageList({
             content={streamingContent}
             citations={streamingCitations}
             toolCalls={streamingToolCalls}
+            pendingActions={pendingActions}
+            scopeExpansions={scopeExpansions}
           />
         )}
 

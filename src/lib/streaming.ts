@@ -1,6 +1,7 @@
 import { auth } from "./firebase";
 import { CHAT_FUNCTION_URL } from "@/config/constants";
 import type { Citation, ToolCall } from "@/types/session";
+import type { PendingActionEvent, ScopeExpansionEvent } from "./connectors";
 
 export type ToolCallEvent = Omit<ToolCall, "startedAt">;
 
@@ -8,6 +9,8 @@ export interface StreamCallbacks {
   onToken: (text: string) => void;
   onCitations: (citations: Citation[]) => void;
   onToolCall: (event: ToolCallEvent) => void;
+  onActionApprovalRequired?: (event: PendingActionEvent) => void;
+  onScopeExpansionRequired?: (event: ScopeExpansionEvent) => void;
   onMetrics: (metrics: {
     ttftMs: number;
     totalMs: number;
@@ -113,6 +116,16 @@ export async function streamChat(
               break;
             case "tool_call":
               callbacks.onToolCall(parsed as ToolCallEvent);
+              break;
+            case "action_approval_required":
+              callbacks.onActionApprovalRequired?.(
+                parsed as PendingActionEvent
+              );
+              break;
+            case "scope_expansion_required":
+              callbacks.onScopeExpansionRequired?.(
+                parsed as ScopeExpansionEvent
+              );
               break;
             case "metrics":
               callbacks.onMetrics(parsed);

@@ -4,6 +4,7 @@ import { NotebookListPage } from "@/features/notebooks/components/NotebookListPa
 import { NotebookWorkspacePage } from "@/features/notebooks/components/NotebookWorkspacePage";
 import { ArchivePage } from "@/features/settings/components/ArchivePage";
 import { ArchivedSessionPage } from "@/features/settings/components/ArchivedSessionPage";
+import { ConnectorsPage } from "@/features/settings/components/ConnectorsPage";
 
 function App() {
   return (
@@ -38,6 +39,14 @@ function App() {
         element={
           <ProtectedRoute>
             <ArchivedSessionPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings/connectors"
+        element={
+          <ProtectedRoute>
+            <ConnectorsPage />
           </ProtectedRoute>
         }
       />

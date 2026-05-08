@@ -4,12 +4,12 @@ A single-user knowledge management tool inspired by NotebookLM. Upload documents
 
 ## ⚠️ Current Working State (read this first)
 
-- **Active branch**: `feat/multi-tool-orchestrator` (cut from `main`). Do NOT push to `main` or deploy to prod from this branch without explicit user approval.
+- **Active branch**: `feat/connectors-google-calendar` (cut from `feat/multi-tool-orchestrator`). Do NOT push to `main` or deploy to prod from this branch without explicit user approval.
 - **Active environment**: `staging` (Firebase project `the-knowledge-base-staging`). All deploys/tests during this work go there. Production (`the-knowledge-base-82d72`) is untouched and still runs the legacy single-tool code from `main`.
-- **What's in flight**: Phase 5 multi-tool orchestrator (FileSearch + 3 sub-agents + Jina prefetch + tool-call UI cards). See the Phase 5 entry in Build Status below.
+- **What's in flight**: Phase 6 Connectors framework + Google Calendar (first connector). Builds on the Phase 5 multi-tool orchestrator. See the Phase 6 entry in Build Status below.
 - **How to deploy to staging**: `firebase deploy --only functions --project staging` (or `npm run deploy:staging`). Frontend dev mode: `npm run dev:staging`.
 - **How to deploy to prod**: `firebase deploy --only functions --project prod` — but only AFTER the branch is reviewed, smoke-tested on staging, and the user has explicitly approved a merge to `main`.
-- **Feature flag**: `MULTI_TOOL_ENABLED=true` is set in `functions/.env.the-knowledge-base-staging` only. Prod stays `false` (legacy single-tool path) until verified.
+- **Feature flags**: `MULTI_TOOL_ENABLED=true` and `CONNECTORS_ENABLED=true` are set in `functions/.env.the-knowledge-base-staging` only. Prod stays `false` for both until verified. **`CONNECTORS_ENABLED` must remain `false` in any env where `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET` are unset — config getters throw lazily but the connector page would surface confusing errors otherwise.**
 
 ## Tech Stack
 
@@ -128,6 +128,35 @@ firebase deploy --only firestore:rules,firestore:indexes  # Deploy rules + index
 - Telegram media: photos, voice messages, audio files, and PDF documents → downloaded via Bot API → uploaded to Cloud Storage → passed to Gemini
 - Max chat attachment size: 10MB per file, max 5 attachments per message
 
+## Connectors — deploy + KMS commands cheat sheet
+
+```bash
+# (One-time per env, already done for staging)
+gcloud config set project the-knowledge-base-staging
+gcloud services enable cloudkms.googleapis.com calendar-json.googleapis.com
+gcloud kms keyrings create connectors --location=us-central1
+gcloud kms keys create refresh-tokens \
+  --keyring=connectors --location=us-central1 --purpose=encryption
+gcloud kms keys add-iam-policy-binding refresh-tokens \
+  --keyring=connectors --location=us-central1 \
+  --member=serviceAccount:$(gcloud projects describe the-knowledge-base-staging --format='value(projectNumber)')-compute@developer.gserviceaccount.com \
+  --role=roles/cloudkms.cryptoKeyEncrypterDecrypter
+openssl rand -base64 48   # → CONNECTOR_STATE_SIGNING_SECRET
+
+# Deploy
+firebase deploy --only firestore:rules --project staging
+firebase deploy --only functions --project staging
+
+# Frontend
+npm run build:staging   # then your usual Netlify deploy
+
+# Sanity check after deploy
+gcloud functions list --project=the-knowledge-base-staging --regions=us-central1 \
+  | grep -E 'connector|chat|getConnector|disconnect|confirmPending|cancelPending'
+# Expect: connectorOAuthStart, connectorOAuthCallback, getConnectorStatus,
+#         disconnectConnector, confirmPendingAction, cancelPendingAction (plus existing ones)
+```
+
 ## Build Status
 
 - **Phase 0**: Complete (scaffold)
@@ -138,6 +167,79 @@ firebase deploy --only firestore:rules,firestore:indexes  # Deploy rules + index
 - **Phase 3**: Complete (Web tools — Google Search, Google Maps, URL Context via slash commands /web /maps /url, per-notebook tool settings, slash command menu in web UI)
 - **Phase 4**: Complete (Multimodal chat — image/audio/PDF attachments in web and Telegram, Gemini native vision/audio understanding)
 - **Phase 5** (in-progress on `feat/multi-tool-orchestrator`, deployed to staging only): Multi-tool orchestrator. Parent Gemini 3 model coordinates FileSearch + 3 single-purpose sub-agents (`web_search`, `maps_search`, `url_fetch`) running on `gemini-3.1-flash-lite` via custom function declarations + `includeServerSideToolInvocations: true`. Lightweight QC, Jina URL prefetch as a pre-step, tool-call cards in the UI, blue-link styling. Gated by `MULTI_TOOL_ENABLED` env flag (`true` on staging, off on prod). Falls back to legacy single-tool path on Gemini 2.5 or when a slash command is used. Not yet merged to `main`/prod
+- **Phase 6** (in-progress on `feat/connectors-google-calendar`, builds on Phase 5): Connectors framework + Google Calendar. Generic provider registry, OAuth (with state JWT), KMS envelope encryption for refresh tokens, HITL approval gate for write actions (`pendingActions` collection + `action_approval_required` SSE event + `ActionApprovalCard` UI + `confirmPendingAction`/`cancelPendingAction` callables), per-tool audit log, incremental scope authorization. Calendar tools: `gcal_freebusy`, `gcal_list_events` (read), `gcal_create_event`, `gcal_update_event`, `gcal_delete_event`, `gcal_respond_to_event` (write — HITL gated, idempotent, read-before-write). Gated by `CONNECTORS_ENABLED` env flag. Backwards-compatible: when no connectors registered or none connected, orchestrator behavior is identical to Phase 5. KMS provisioned on staging; OAuth client + consent screen are the only remaining manual steps before E2E.
+
+## Connectors (Phase 6 — `feat/connectors-google-calendar`)
+
+User-authorized third-party integrations callable from chat. First connector: Google Calendar.
+
+### Architecture
+
+- **Generic framework** at `functions/src/services/connectors/`:
+  - `registry.ts` — singleton provider registry; `dispatch(toolName, args, ctx)` for read tools (immediate exec) and write tools (HITL gate via `pendingActions`).
+  - `types.ts` — `ConnectorProvider`, `ConnectorTool`, `ConnectorContext`, `EncryptedBlob`, etc.
+  - `crypto.ts` — AES-256-GCM with random per-record DEK, DEK wrapped via Cloud KMS (`@google-cloud/kms`). Falls back to DEV MODE (base64) when `CONNECTOR_KMS_KEY` is unset (local emulator only).
+  - `stateJwt.ts` — HS256 sign/verify for OAuth state CSRF protection. 10-minute TTL.
+  - `oauth.ts` — `buildOAuthStartUrl` and `handleOAuthCallback`. Encrypts refresh + access tokens before persisting. Supports incremental authorization via `mode: 'initial' | 'expand'`.
+  - `pendingActions.ts` — propose/confirm/cancel helpers backed by `pendingActions/{id}` collection (5-minute default TTL).
+  - `audit.ts` — `writeAudit` to `auditLogs/{id}` with 90-day TTL field.
+  - `index.ts` — `bootConnectors()` (idempotent, gated on `CONNECTORS_ENABLED=true`); registers `googleCalendarProvider`.
+- **Google Calendar provider** at `functions/src/services/connectors/google_calendar/`:
+  - 6 tools: `gcal_freebusy`, `gcal_list_events` (read; no approval), `gcal_create_event`, `gcal_update_event`, `gcal_delete_event`, `gcal_respond_to_event` (write; HITL gate).
+  - Idempotent event IDs derived from `ctx.idempotencyKey` (registry computes a SHA-256 of `{uid, sessionId, tool, canonical(args)}` and threads it through).
+  - Read-before-write on update/delete/RSVP: `events.get` first to validate existence + capture state for audit.
+  - Initial scopes (read): `openid email profile calendar.readonly calendar.freebusy`. Full scopes (read+write): adds `calendar.events`. Frontend can request `mode=expand` for the writeable scope on demand.
+- **Per-user OAuth tokens** at `users/{uid}/connectors/{provider}` — refresh tokens encrypted via Cloud KMS envelope; server-only via Firestore rules.
+- **HITL approval gate**: write tools emit an `action_approval_required` SSE event from `/chat`; the `ActionApprovalCard` in chat renders a Confirm/Cancel UI with a 5-minute countdown; on Confirm, frontend calls `confirmPendingAction({actionId})` callable which validates ownership/status/expiry then runs the handler with the same idempotency key.
+- **Audit log** at `auditLogs/{id}` covers every connector tool execution (read or write, success or error) with `{uid, sessionId, provider, tool, args, result, status, idempotencyKey, latencyMs, model, reasonCode, createdAt, ttlAt}`.
+- **Incremental authorization (implemented)**: first connect requests read-only scopes (`calendar.readonly`, `calendar.freebusy`). When the agent calls a write tool and the user hasn't granted `calendar.events`, the registry returns `{kind:'scope_required', missingScopes}` (no throw). The orchestrator yields a `scope_expansion_required` SSE event AND tells Gemini to inform the user. The frontend renders a `ScopeExpansionCard` in the chat with a "Grant access" button that opens the OAuth popup with `mode=expand`. After consent, the user re-prompts and the write proceeds via the normal HITL approval flow.
+- **MCP forward-compatibility**: `ConnectorTool.declaration` is JSON-Schema-shaped (matches MCP `CallToolRequest`); we can re-expose providers as MCP servers later without rewriting handlers.
+
+### Frontend
+- `/settings/connectors` page (`src/features/settings/components/ConnectorsPage.tsx`) — list of providers with Connect/Disconnect/Reconnect.
+- `useConnectors` hook opens OAuth in a popup, listens for `postMessage` from the callback page.
+- `ActionApprovalCard` (`src/features/chat/components/ActionApprovalCard.tsx`) and `ScopeExpansionCard` render inline under the assistant message that triggered them. They are **anchored to their turn**: when streaming finishes, the events are persisted onto `message.pendingActions` and `message.scopeExpansions` on the assistant message doc, so they stay attached to that turn (no pile-up on subsequent turns).
+- Live resolution state lives in a module-level store at `src/lib/connectorActionStore.ts` (subscribed via `useSyncExternalStore`). This survives the StreamingMessage → ChatMessage unmount/remount boundary, so a card the user just confirmed still shows "Done ✓" when its hosting message re-renders from Firestore.
+- Cards are fully collapsible after resolution (matching `ToolCallCard`): pending = full card with countdown + Confirm/Cancel; resolved = one-line pill with status icon, click to expand args + result.
+- After page reload the runtime store is empty; cards fall back to their lifecycle (pending if `expiresAt > now`, otherwise expired). We never fake an "executed" state from persisted records — the backend `auditLogs` collection is the source of truth for what actually happened.
+- `streaming.ts` handles `action_approval_required` and `scope_expansion_required` SSE events; `useChat` accumulates them per-turn and clears on `sendMessage`; `ChatMessage` renders persisted records, `StreamingMessage` renders live ones.
+
+### Cloud Functions exports
+- `connectorOAuthStart` (HTTP, requires Firebase ID token) — returns `{ url }` to the Google consent screen.
+- `connectorOAuthCallback` (HTTP, public) — exchanges code, encrypts + persists tokens, posts back to opener and closes.
+- `getConnectorStatus` (callable) — `{connectors: ConnectorStatus[]}` for all registered providers.
+- `disconnectConnector({provider})` (callable) — best-effort `oauth2.revokeToken`, marks doc `revoked`, deletes encrypted token blobs.
+- `confirmPendingAction({actionId})` (callable) — auth-gated: ownership + status + expiry checks, then `executeApprovedAction`.
+- `cancelPendingAction({actionId})` (callable) — same gating, marks `cancelled` + audits.
+
+### Firestore rules (`firestore.rules`)
+Server-only deny rules added for:
+- `users/{uid}/connectors/{provider}` (refresh tokens live here, even though encrypted)
+- `pendingActions/{actionId}`
+- `auditLogs/{logId}`
+
+### Provisioning status (staging) — done
+
+For `the-knowledge-base-staging`, project number `105713297964`:
+- ✅ Cloud KMS API + Calendar API enabled.
+- ✅ KMS keyring `connectors` (us-central1) + key `refresh-tokens` (symmetric, software protection).
+- ✅ IAM: compute SA granted `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the key.
+- ✅ `CONNECTOR_STATE_SIGNING_SECRET`, `CONNECTOR_KMS_KEY`, `GOOGLE_OAUTH_*` all in `functions/.env.the-knowledge-base-staging`.
+- ✅ OAuth web client created in GCP; consent screen configured with all 6 scopes; test users added.
+- ✅ Firestore rules deployed (deny-all on `users/{uid}/connectors/**`, `pendingActions/**`, `auditLogs/**`).
+- ✅ Functions deployed: `chat`, `connectorOAuthStart`, `connectorOAuthCallback`, `getConnectorStatus`, `disconnectConnector`, `confirmPendingAction`, `cancelPendingAction`.
+- ✅ `CONNECTORS_ENABLED=true` on staging.
+- ✅ End-to-end verified: connect, scope expansion, freebusy/list_events reads, create_event/update_event/delete_event with HITL approval, audit log writes.
+
+### Production rollout (when ready)
+
+Repeat the staging steps for `the-knowledge-base-82d72`:
+- New OAuth web client + consent screen on the prod GCP project (separate redirect URI: `https://us-central1-the-knowledge-base-82d72.cloudfunctions.net/connectorOAuthCallback`).
+- New KMS keyring + key + IAM binding on prod.
+- Generate fresh `CONNECTOR_STATE_SIGNING_SECRET` for prod env.
+- **Complete Google's OAuth app verification** before going past 100 test users — `calendar` scopes are sensitive. Plan 1–4 weeks.
+- `CONNECTORS_ENABLED=false` on prod until verification is done; users on prod see no connector UI.
+- Firestore rules + functions deploy from `main` (after merge from `feat/connectors-google-calendar`).
 
 ## Full Requirements
 

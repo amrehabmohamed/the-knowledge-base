@@ -137,10 +137,27 @@ export interface ToolCallEvent {
   durationMs?: number;
 }
 
+export interface ActionApprovalEvent {
+  actionId: string;
+  provider: string;
+  tool: string;
+  args: Record<string, unknown>;
+  summary: string;
+  expiresAt: number;
+}
+
+export interface ScopeExpansionEvent {
+  provider: string;
+  tool: string;
+  missingScopes: string[];
+}
+
 export type ChatChunk =
   | { type: "token"; text: string }
   | { type: "citations"; citations: ChatCitation[] }
   | { type: "tool_call"; toolCall: ToolCallEvent }
+  | { type: "action_approval_required"; action: ActionApprovalEvent }
+  | { type: "scope_expansion_required"; scope: ScopeExpansionEvent }
   | { type: "done"; totalTokens: number };
 
 /**
@@ -436,7 +453,9 @@ export function isGemini3(apiModelId: string): boolean {
 export function routeChat(
   query: string,
   history: Array<{ role: string; content: string }>,
+  uid: string,
   notebookId: string,
+  sessionId: string | undefined,
   modelId: string,
   customSystemPrompt?: string,
   channel: "web" | "telegram" = "web",
@@ -458,7 +477,9 @@ export function routeChat(
     return orchestrate(
       query,
       history,
+      uid,
       notebookId,
+      sessionId,
       modelId,
       customSystemPrompt,
       channel,

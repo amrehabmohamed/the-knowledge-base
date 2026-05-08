@@ -250,7 +250,9 @@ export async function handleChatMessage(chatId: number, message: TelegramMessage
     const stream = routeChat(
       actualQuery,
       history,
+      link.firebaseUid,
       notebookId,
+      sessionId,
       modelId,
       customSystemPrompt,
       "telegram",

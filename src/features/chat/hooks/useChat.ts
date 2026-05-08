@@ -9,6 +9,10 @@ import { uploadChatAttachment } from "@/features/chat/services/attachmentService
 import { auth } from "@/lib/firebase";
 import type { Source } from "@/types/source";
 import type { Citation, Attachment, ToolCall } from "@/types/session";
+import type {
+  PendingActionEvent,
+  ScopeExpansionEvent,
+} from "@/lib/connectors";
 
 /**
  * Apply a streamed tool_call event to the running list. New ids append;
@@ -40,6 +44,12 @@ export function useChat(notebookId: string, sources: Source[]) {
   const [streamingContent, setStreamingContent] = useState("");
   const [streamingCitations, setStreamingCitations] = useState<Citation[]>([]);
   const [streamingToolCalls, setStreamingToolCalls] = useState<ToolCall[]>([]);
+  // TODO: persist pendingActions on the assistant message doc once backend
+  // exposes a way to re-fetch action state on reload. For v1 these live in
+  // memory only and are lost on refresh — the actions still expire safely
+  // server-side.
+  const [pendingActions, setPendingActions] = useState<PendingActionEvent[]>([]);
+  const [scopeExpansions, setScopeExpansions] = useState<ScopeExpansionEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const startTimeRef = useRef<number>(0);
@@ -76,6 +86,10 @@ export function useChat(notebookId: string, sources: Source[]) {
       setStreamingContent("");
       setStreamingCitations([]);
       setStreamingToolCalls([]);
+      // Clear per-turn HITL state — previous turn's cards are now baked into
+      // their assistant message doc and will render via ChatMessage.
+      setPendingActions([]);
+      setScopeExpansions([]);
       startTimeRef.current = Date.now();
       ttftRef.current = null;
 
@@ -139,6 +153,8 @@ export function useChat(notebookId: string, sources: Source[]) {
       let finalContent = "";
       let finalCitations: Citation[] = [];
       let finalToolCalls: ToolCall[] = [];
+      let finalPendingActions: PendingActionEvent[] = [];
+      let finalScopeExpansions: ScopeExpansionEvent[] = [];
       let metricsData: { ttftMs: number; totalMs: number; tokenCount: number } | undefined;
 
       try {
@@ -174,6 +190,22 @@ export function useChat(notebookId: string, sources: Source[]) {
               finalToolCalls = updated;
               setStreamingToolCalls(updated);
             },
+            onActionApprovalRequired: (event) => {
+              if (!finalPendingActions.some((a) => a.actionId === event.actionId)) {
+                finalPendingActions = [...finalPendingActions, event];
+                setPendingActions(finalPendingActions);
+              }
+            },
+            onScopeExpansionRequired: (event) => {
+              if (
+                !finalScopeExpansions.some(
+                  (e) => e.provider === event.provider && e.tool === event.tool
+                )
+              ) {
+                finalScopeExpansions = [...finalScopeExpansions, event];
+                setScopeExpansions(finalScopeExpansions);
+              }
+            },
             onMetrics: (metrics) => {
               metricsData = metrics;
             },
@@ -198,6 +230,10 @@ export function useChat(notebookId: string, sources: Source[]) {
             content: finalContent,
             citations: finalCitations.length > 0 ? finalCitations : null,
             toolCalls: finalToolCalls.length > 0 ? finalToolCalls : null,
+            pendingActions:
+              finalPendingActions.length > 0 ? finalPendingActions : null,
+            scopeExpansions:
+              finalScopeExpansions.length > 0 ? finalScopeExpansions : null,
             tokenCount: metricsData?.tokenCount ?? 0,
             modelId: session.modelId,
             agentType: toolOverride ?? "filesearch",
@@ -241,6 +277,8 @@ export function useChat(notebookId: string, sources: Source[]) {
     streamingContent,
     streamingCitations,
     streamingToolCalls,
+    pendingActions,
+    scopeExpansions,
     error,
     loading: sessionLoading || messagesLoading,
     readySources,

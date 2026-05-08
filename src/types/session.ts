@@ -58,6 +58,27 @@ export interface Attachment {
   downloadUrl: string;
 }
 
+/**
+ * A pending HITL action emitted by a connector tool. Persisted on the
+ * assistant message doc so the actionId survives reload (current state must
+ * be re-fetched from backend on load — for v1 we only persist the id and
+ * basic metadata).
+ */
+export interface PendingActionRecord {
+  actionId: string;
+  provider: string;
+  tool: string;
+  args: Record<string, unknown>;
+  summary: string;
+  expiresAt: number;
+}
+
+export interface ScopeExpansionRecord {
+  provider: string;
+  tool: string;
+  missingScopes: string[];
+}
+
 export interface Message {
   id: string;
   sessionId: string;
@@ -70,6 +91,8 @@ export interface Message {
   metrics: MessageMetrics | null;
   attachments?: Attachment[] | null;
   toolCalls?: ToolCall[] | null;
+  pendingActions?: PendingActionRecord[] | null;
+  scopeExpansions?: ScopeExpansionRecord[] | null;
   superseded?: boolean;
   createdAt: Timestamp;
 }

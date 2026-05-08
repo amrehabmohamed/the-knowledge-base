@@ -20,6 +20,12 @@ import {
   prefetchUrls,
   renderPrefetchBlock,
 } from "./urlPrefetch";
+import { bootConnectors, getEnabledDeclarations } from "./connectors";
+
+// Boot connectors once at module load (idempotent; no-op when CONNECTORS_ENABLED!=true).
+bootConnectors().catch((err) =>
+  console.error("[ORCH] bootConnectors failed:", err)
+);
 
 let client: GoogleGenAI | null = null;
 function getClient(): GoogleGenAI {
@@ -130,7 +136,9 @@ async function prepareMultimodalParts(
 export async function* orchestrate(
   query: string,
   history: Array<{ role: string; content: string }>,
+  uid: string,
   notebookId: string,
+  sessionId: string | undefined,
   modelId: string,
   customSystemPrompt?: string,
   channel: "web" | "telegram" = "web",
@@ -213,6 +221,11 @@ export async function* orchestrate(
     channel
   );
 
+  // Ensure connectors registry is booted before reading enabled declarations.
+  await bootConnectors();
+  const builtInDecls = ALL_FUNCTION_DECLARATIONS;
+  const connectorDecls = await getEnabledDeclarations(uid);
+  const allDecls = [...builtInDecls, ...connectorDecls];
   const tools = [
     {
       fileSearch: {
@@ -220,7 +233,7 @@ export async function* orchestrate(
         metadataFilter,
       },
     },
-    { functionDeclarations: ALL_FUNCTION_DECLARATIONS },
+    { functionDeclarations: allDecls },
   ];
   const toolConfig = { includeServerSideToolInvocations: true };
 
@@ -378,7 +391,7 @@ export async function* orchestrate(
       };
     }
     const results = await Promise.all(
-      calls.map((call) => dispatch(call.name, call.args))
+      calls.map((call) => dispatch(call.name, call.args, { uid, sessionId }))
     );
 
     // Build functionResponse parts for the next turn.
@@ -403,6 +416,60 @@ export async function* orchestrate(
           durationMs: Date.now() - startTimes[i],
         },
       };
+
+      if (res.scopeRequired) {
+        yield {
+          type: "scope_expansion_required",
+          scope: {
+            provider: res.scopeRequired.provider,
+            tool: res.scopeRequired.tool,
+            missingScopes: res.scopeRequired.missingScopes,
+          },
+        };
+        responseParts.push({
+          functionResponse: {
+            name: call.fullName,
+            id: call.id,
+            response: {
+              status: "scope_expansion_required",
+              provider: res.scopeRequired.provider,
+              missingScopes: res.scopeRequired.missingScopes,
+              message:
+                "The user has not granted the permission required for this action. A 'Grant access' card has been shown in the chat. Briefly tell the user you need them to grant access via that card before you can proceed. Do not retry this tool this turn.",
+            },
+          },
+        });
+        continue;
+      }
+
+      if (res.pendingAction) {
+        const expiresAt = Date.now() + 5 * 60 * 1000;
+        yield {
+          type: "action_approval_required",
+          action: {
+            actionId: res.pendingAction.actionId,
+            provider: res.pendingAction.provider,
+            tool: call.name,
+            args: call.args,
+            summary: res.pendingAction.summary,
+            expiresAt,
+          },
+        };
+        responseParts.push({
+          functionResponse: {
+            name: call.fullName,
+            id: call.id,
+            response: {
+              status: "awaiting_user_approval",
+              summary: res.pendingAction.summary,
+              message:
+                "The user must confirm this action via the approval card. Inform the user briefly that the card has been shown and you will execute upon their confirmation. Do not call any more tools this turn.",
+            },
+          },
+        });
+        continue;
+      }
+
       responseParts.push({
         functionResponse: {
           // Echo the exact name Gemini sent (may include "default_api:" prefix).

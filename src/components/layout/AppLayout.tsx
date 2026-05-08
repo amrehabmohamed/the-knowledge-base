@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { LogOut, Archive } from "lucide-react";
+import { LogOut, Archive, Plug } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuthContext } from "@/features/auth";
 import { SystemStatus } from "@/features/settings";
@@ -20,6 +20,14 @@ export function AppLayout({ children }: { children: ReactNode }) {
           <span className="hidden font-body text-sm text-muted-foreground sm:inline">
             {user?.email}
           </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate("/settings/connectors")}
+          >
+            <Plug className="h-4 w-4 sm:mr-1.5" />
+            <span className="hidden sm:inline">Connectors</span>
+          </Button>
           <Button
             variant="ghost"
             size="sm"

@@ -3,6 +3,7 @@ import { webSearch } from "./web_search";
 import { mapsSearch } from "./maps_search";
 import { urlFetch } from "./url_fetch";
 import { validateSubAgent } from "./qc";
+import { dispatch as connectorDispatch } from "../connectors";
 
 export type { SubAgentName, SubAgentResult } from "./types";
 export { ALL_FUNCTION_DECLARATIONS } from "./declarations";
@@ -26,16 +27,70 @@ export function isSubAgentName(n: string): n is SubAgentName {
  */
 export async function dispatch(
   name: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  ctx: { uid: string; sessionId?: string }
 ): Promise<SubAgentResult> {
   if (!isSubAgentName(name)) {
-    return {
-      ok: false,
-      summary: "",
-      citations: [],
-      rawTokens: 0,
-      reason: `unknown sub-agent: ${name}`,
-    };
+    // Try connector registry.
+    try {
+      const result = await connectorDispatch(name, args, ctx);
+      if (result.kind === "result") {
+        const summary = JSON.stringify(result.data, null, 2).slice(0, 8000);
+        return { ok: true, summary, citations: [], rawTokens: 0 };
+      }
+      if (result.kind === "scope_required") {
+        return {
+          ok: true,
+          summary:
+            `Additional permission required to run ${result.tool}. ` +
+            `The user has been shown a card to grant access to ${result.provider}. ` +
+            `Tell the user to click the Grant access button. Do not call this tool again until they grant access.`,
+          citations: [],
+          rawTokens: 0,
+          scopeRequired: {
+            provider: result.provider,
+            tool: result.tool,
+            missingScopes: result.missingScopes,
+          },
+        };
+      }
+      // awaiting_approval
+      return {
+        ok: true,
+        summary: "Action awaiting user approval: " + result.summary,
+        citations: [],
+        rawTokens: 0,
+        pendingAction: {
+          actionId: result.actionId,
+          summary: result.summary,
+          provider: result.provider,
+        },
+      };
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : err && typeof err === "object" && "message" in err
+            ? String((err as { message?: unknown }).message)
+            : String(err);
+      console.error(`[CONNECTOR] ${name} failed:`, msg, err);
+      if (/unknown tool/i.test(msg)) {
+        return {
+          ok: false,
+          summary: "",
+          citations: [],
+          rawTokens: 0,
+          reason: `unknown sub-agent: ${name}`,
+        };
+      }
+      return {
+        ok: false,
+        summary: "",
+        citations: [],
+        rawTokens: 0,
+        reason: msg,
+      };
+    }
   }
 
   let raw: SubAgentResult;
