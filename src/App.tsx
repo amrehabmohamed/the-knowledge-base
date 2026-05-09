@@ -5,6 +5,7 @@ import { NotebookWorkspacePage } from "@/features/notebooks/components/NotebookW
 import { ArchivePage } from "@/features/settings/components/ArchivePage";
 import { ArchivedSessionPage } from "@/features/settings/components/ArchivedSessionPage";
 import { ConnectorsPage } from "@/features/settings/components/ConnectorsPage";
+import { CONNECTORS_UI_ENABLED } from "@/config/constants";
 
 function App() {
   return (
@@ -42,14 +43,16 @@ function App() {
           </ProtectedRoute>
         }
       />
-      <Route
-        path="/settings/connectors"
-        element={
-          <ProtectedRoute>
-            <ConnectorsPage />
-          </ProtectedRoute>
-        }
-      />
+      {CONNECTORS_UI_ENABLED && (
+        <Route
+          path="/settings/connectors"
+          element={
+            <ProtectedRoute>
+              <ConnectorsPage />
+            </ProtectedRoute>
+          }
+        />
+      )}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

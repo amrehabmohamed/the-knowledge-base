@@ -4,6 +4,7 @@ import { LogOut, Archive, Plug } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuthContext } from "@/features/auth";
 import { SystemStatus } from "@/features/settings";
+import { CONNECTORS_UI_ENABLED } from "@/config/constants";
 
 export function AppLayout({ children }: { children: ReactNode }) {
   const { user, logout } = useAuthContext();
@@ -20,14 +21,16 @@ export function AppLayout({ children }: { children: ReactNode }) {
           <span className="hidden font-body text-sm text-muted-foreground sm:inline">
             {user?.email}
           </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => navigate("/settings/connectors")}
-          >
-            <Plug className="h-4 w-4 sm:mr-1.5" />
-            <span className="hidden sm:inline">Connectors</span>
-          </Button>
+          {CONNECTORS_UI_ENABLED && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate("/settings/connectors")}
+            >
+              <Plug className="h-4 w-4 sm:mr-1.5" />
+              <span className="hidden sm:inline">Connectors</span>
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"

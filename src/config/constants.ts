@@ -105,6 +105,15 @@ export const PING_FUNCTION_URL = `${FUNCTIONS_BASE_URL}/ping`;
 export const CONNECTOR_OAUTH_START_URL = `${FUNCTIONS_BASE_URL}/connectorOAuthStart`;
 export const CONNECTOR_OAUTH_CALLBACK_URL = `${FUNCTIONS_BASE_URL}/connectorOAuthCallback`;
 
+/**
+ * Frontend feature flag for the Connectors UI. Hides the nav entry and
+ * /settings/connectors route in environments where the backend connector
+ * functions aren't deployed yet (e.g. prod until the rollout is done).
+ * Default: false. Set VITE_CONNECTORS_ENABLED=true in the staging .env.
+ */
+export const CONNECTORS_UI_ENABLED =
+  import.meta.env.VITE_CONNECTORS_ENABLED === "true";
+
 // System status warm-up
 export const WARMUP_TIMEOUT_MS = 900;
 export const WARM_THRESHOLD_MS = 200;

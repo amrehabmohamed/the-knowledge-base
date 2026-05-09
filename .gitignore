@@ -47,3 +47,6 @@ pnpm-debug.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Internal-only artifacts (kept local, not shared via git)
+CONNECTORS_PRESENTATION.html
