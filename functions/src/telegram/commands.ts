@@ -1,4 +1,5 @@
 import * as admin from "firebase-admin";
+import { FieldValue } from "firebase-admin/firestore";
 import { GEMINI_MODELS, TELEGRAM_DEFAULT_MODEL } from "../config";
 import { sendMessage } from "./telegramClient";
 import type { ChatState, PendingLinking, TelegramLink } from "./types";
@@ -137,8 +138,8 @@ async function handleCodeInput(chatId: number, code: string): Promise<void> {
     activeNotebookId: null,
     activeSessionId: null,
     activeModelId: TELEGRAM_DEFAULT_MODEL,
-    linkedAt: admin.firestore.FieldValue.serverTimestamp(),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    linkedAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
   });
 
   // Clean up OTP doc and pending state
@@ -228,7 +229,7 @@ export async function handleSwitch(chatId: number, link: TelegramLink, args: str
   await db().doc(`telegramLinks/${chatId}`).update({
     activeNotebookId: selectedDoc.id,
     activeSessionId: null,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
   });
 
   // Update in-memory state
@@ -270,7 +271,7 @@ export async function handleModel(chatId: number, link: TelegramLink, args: stri
 
   await db().doc(`telegramLinks/${chatId}`).update({
     activeModelId: selectedModel,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
   });
 
   // Update in-memory state
@@ -330,14 +331,14 @@ export async function handleReset(chatId: number, link: TelegramLink): Promise<v
     .doc(`notebooks/${link.activeNotebookId}/sessions/${link.activeSessionId}`)
     .update({
       status: "archived",
-      archivedAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      archivedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
 
   // Clear active session
   await db().doc(`telegramLinks/${chatId}`).update({
     activeSessionId: null,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
   });
 
   const state = chatStates.get(chatId);

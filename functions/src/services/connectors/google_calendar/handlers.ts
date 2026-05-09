@@ -1,6 +1,7 @@
 import * as crypto from "crypto";
 import { google } from "googleapis";
 import type { ConnectorContext } from "../types";
+import { parseDateTimeToIso } from "../dateTime";
 
 interface NormalizedError {
   code: string;
@@ -81,12 +82,15 @@ export async function handleFreebusy(args: any, ctx: ConnectorContext) {
     ? args.calendarIds
     : ["primary"];
   const cal = google.calendar({ version: "v3", auth: ctx.oauth as any });
+  const tz = args.timeZone;
+  const timeMinIso = parseDateTimeToIso(args.timeMin, { timeZone: tz });
+  const timeMaxIso = parseDateTimeToIso(args.timeMax, { timeZone: tz });
   try {
     const { data } = await cal.freebusy.query({
       requestBody: {
-        timeMin: args.timeMin,
-        timeMax: args.timeMax,
-        timeZone: args.timeZone,
+        timeMin: timeMinIso,
+        timeMax: timeMaxIso,
+        timeZone: tz,
         items: calendarIds.map((id) => ({ id })),
       },
     });
@@ -110,10 +114,12 @@ export async function handleListEvents(args: any, ctx: ConnectorContext) {
       return { events: [projectEvent(data)] };
     }
     const maxResults = Math.min(Math.max(1, Number(args?.maxResults ?? 10)), 25);
+    const timeMin = args?.timeMin ? parseDateTimeToIso(args.timeMin) : undefined;
+    const timeMax = args?.timeMax ? parseDateTimeToIso(args.timeMax) : undefined;
     const { data } = await cal.events.list({
       calendarId,
-      timeMin: args?.timeMin,
-      timeMax: args?.timeMax,
+      timeMin,
+      timeMax,
       q: args?.q,
       maxResults,
       singleEvents: true,
@@ -134,13 +140,24 @@ export async function handleCreateEvent(args: any, ctx: ConnectorContext) {
   const idemId = makeIdemId(String(seed));
   const cal = google.calendar({ version: "v3", auth: ctx.oauth as any });
 
+  // Normalize start/end so natural-language ("tomorrow at 4pm") and ISO inputs
+  // both end up as RFC3339 with offset. Calendar accepts either dateTime+timeZone
+  // or dateTime with embedded offset — we use the latter for simplicity.
+  const tz = args.start?.timeZone || args.end?.timeZone;
+  const startIso = parseDateTimeToIso(args.start.dateTime, { timeZone: tz });
+  const endIso = parseDateTimeToIso(args.end.dateTime, { timeZone: tz });
+  const startBlock: Record<string, string> = { dateTime: startIso };
+  const endBlock: Record<string, string> = { dateTime: endIso };
+  if (args.start.timeZone) startBlock.timeZone = args.start.timeZone;
+  if (args.end.timeZone) endBlock.timeZone = args.end.timeZone;
+
   const requestBody: any = {
     id: idemId,
     summary: args.summary,
     description: args.description,
     location: args.location,
-    start: args.start,
-    end: args.end,
+    start: startBlock,
+    end: endBlock,
     attendees: Array.isArray(args.attendees)
       ? args.attendees.map((a: any) => ({ email: a.email, optional: a.optional }))
       : undefined,
@@ -193,12 +210,25 @@ export async function handleUpdateEvent(args: any, ctx: ConnectorContext) {
     throw norm;
   }
   const patch = args.patch;
+  // Normalize natural-language / ISO inputs on the start/end being patched.
+  let startBlock: any = patch.start;
+  let endBlock: any = patch.end;
+  if (patch.start?.dateTime) {
+    const tz = patch.start.timeZone;
+    startBlock = { dateTime: parseDateTimeToIso(patch.start.dateTime, { timeZone: tz }) };
+    if (tz) startBlock.timeZone = tz;
+  }
+  if (patch.end?.dateTime) {
+    const tz = patch.end.timeZone;
+    endBlock = { dateTime: parseDateTimeToIso(patch.end.dateTime, { timeZone: tz }) };
+    if (tz) endBlock.timeZone = tz;
+  }
   const requestBody: any = {
     summary: patch.summary,
     description: patch.description,
     location: patch.location,
-    start: patch.start,
-    end: patch.end,
+    start: startBlock,
+    end: endBlock,
     attendees: Array.isArray(patch.attendees)
       ? patch.attendees.map((a: any) => ({ email: a.email, optional: a.optional }))
       : undefined,

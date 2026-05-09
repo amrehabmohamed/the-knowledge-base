@@ -1,9 +1,12 @@
 import { auth } from "./firebase";
 import { CHAT_FUNCTION_URL } from "@/config/constants";
-import type { Citation, ToolCall } from "@/types/session";
+import type { Citation, ToolCall, ClarificationRecord } from "@/types/session";
 import type { PendingActionEvent, ScopeExpansionEvent } from "./connectors";
 
 export type ToolCallEvent = Omit<ToolCall, "startedAt">;
+
+/** SSE payload for `clarification_required` — wire-identical to ClarificationRecord. */
+export type ClarificationRequiredEvent = ClarificationRecord;
 
 export interface StreamCallbacks {
   onToken: (text: string) => void;
@@ -11,6 +14,7 @@ export interface StreamCallbacks {
   onToolCall: (event: ToolCallEvent) => void;
   onActionApprovalRequired?: (event: PendingActionEvent) => void;
   onScopeExpansionRequired?: (event: ScopeExpansionEvent) => void;
+  onClarificationRequired?: (event: ClarificationRequiredEvent) => void;
   onMetrics: (metrics: {
     ttftMs: number;
     totalMs: number;
@@ -31,7 +35,7 @@ interface ChatParams {
   notebookId: string;
   query: string;
   modelId: string;
-  history: Array<{ role: string; content: string }>;
+  history: Array<{ role: string; content: string; toolCalls?: ToolCall[] }>;
   sessionId?: string;
   toolOverride?: string;
   attachments?: ChatAttachmentParam[];
@@ -125,6 +129,11 @@ export async function streamChat(
             case "scope_expansion_required":
               callbacks.onScopeExpansionRequired?.(
                 parsed as ScopeExpansionEvent
+              );
+              break;
+            case "clarification_required":
+              callbacks.onClarificationRequired?.(
+                parsed as ClarificationRequiredEvent
               );
               break;
             case "metrics":

@@ -1,4 +1,5 @@
 import * as admin from "firebase-admin";
+import { FieldValue } from "firebase-admin/firestore";
 import { routeChat, type ChatAttachment } from "../services/gemini";
 import { summarizeSession } from "../services/summarize";
 import {
@@ -204,7 +205,7 @@ export async function handleChatMessage(chatId: number, message: TelegramMessage
     await db().doc(`telegramLinks/${chatId}`).update({
       activeNotebookId: null,
       activeSessionId: null,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
     const state = chatStates.get(chatId);
     if (state) {
@@ -283,7 +284,7 @@ export async function handleChatMessage(chatId: number, message: TelegramMessage
       metrics: null,
       attachments: attachments ?? null,
       superseded: false,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
     });
 
     await messagesRef.add({
@@ -296,15 +297,15 @@ export async function handleChatMessage(chatId: number, message: TelegramMessage
       agentType: toolOverride ?? "filesearch",
       metrics: null,
       superseded: false,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
     });
 
     // 10. Update session token count and message count
     const sessionRef = db().doc(`notebooks/${notebookId}/sessions/${sessionId}`);
     await sessionRef.update({
-      totalTokens: admin.firestore.FieldValue.increment(totalTokens),
-      messageCount: admin.firestore.FieldValue.increment(2),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      totalTokens: FieldValue.increment(totalTokens),
+      messageCount: FieldValue.increment(2),
+      updatedAt: FieldValue.serverTimestamp(),
     });
 
     // 11. Check summarization threshold
@@ -337,8 +338,8 @@ async function getOrCreateSession(
         // Session expired — archive it
         await sessionDoc.ref.update({
           status: "archived",
-          archivedAt: admin.firestore.FieldValue.serverTimestamp(),
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          archivedAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
         });
         sessionId = null;
       } else {
@@ -361,8 +362,8 @@ async function getOrCreateSession(
         messageCount: 0,
         modelId: link.activeModelId || TELEGRAM_DEFAULT_MODEL,
         channel: "telegram",
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
 
     sessionId = newSessionRef.id;
@@ -370,7 +371,7 @@ async function getOrCreateSession(
     // Update link with new session
     await db().doc(`telegramLinks/${chatId}`).update({
       activeSessionId: sessionId,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
 
     // Update in-memory state
@@ -450,14 +451,14 @@ async function checkAndSummarize(notebookId: string, sessionId: string): Promise
         agentType: "summarizer",
         metrics: null,
         superseded: false,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: FieldValue.serverTimestamp(),
       }
     );
 
     // Update session token count
     batch.update(sessionRef, {
-      totalTokens: admin.firestore.FieldValue.increment(sumTokens),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      totalTokens: FieldValue.increment(sumTokens),
+      updatedAt: FieldValue.serverTimestamp(),
     });
 
     await batch.commit();
@@ -467,7 +468,7 @@ async function checkAndSummarize(notebookId: string, sessionId: string): Promise
     await db()
       .doc(`notebooks/${notebookId}/sessions/${sessionId}`)
       .update({
-        lastSummarizationFailedAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastSummarizationFailedAt: FieldValue.serverTimestamp(),
       })
       .catch(() => {});
   }

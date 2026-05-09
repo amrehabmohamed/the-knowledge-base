@@ -6,10 +6,33 @@ export type ToolClass = "read" | "write";
 
 export interface ConnectorContext {
   uid: string;
-  oauth: OAuth2Client;
+  /** Populated for OAuth providers (e.g. Google Calendar). Undefined for non-OAuth providers. */
+  oauth?: OAuth2Client;
   provider: string;
   sessionId?: string;
   idempotencyKey?: string;
+  /** Non-OAuth providers (e.g. Tech Trax) carry their HTTP client here. */
+  client?: unknown;
+  /** Opaque token for optimistic-lock headers (e.g. an HTTP-date or ETag). */
+  lockToken?: string;
+}
+
+/**
+ * Thrown by a connector tool handler when the call cannot proceed because the
+ * agent supplied insufficient/invalid args (missing required fields the model
+ * should ask the user about). The registry catches this and converts it to a
+ * `validation_pending` dispatch result without creating a pending action.
+ */
+export class ValidationPendingError extends Error {
+  public missing: Array<{ key: string; label: string; type: string }>;
+  constructor(
+    missing: Array<{ key: string; label: string; type: string }>,
+    message: string
+  ) {
+    super(message);
+    this.name = "ValidationPendingError";
+    this.missing = missing;
+  }
 }
 
 export interface ConnectorTool {
@@ -19,6 +42,12 @@ export interface ConnectorTool {
   handler: (args: any, ctx: ConnectorContext) => Promise<unknown>;
   requiredScopes: string[];
   summarizeForApproval?: (args: any) => string;
+  /**
+   * Optional pre-approval validation hook. Runs BEFORE the read/write branch in
+   * dispatch. Throw `ValidationPendingError` to short-circuit and ask the user
+   * for missing fields without creating a pending-action approval card.
+   */
+  preflight?: (args: any, ctx: ConnectorContext) => Promise<void>;
 }
 
 export interface ConnectorProvider {
@@ -27,7 +56,13 @@ export interface ConnectorProvider {
   initialScopes: string[];
   fullScopes: string[];
   tools: ConnectorTool[];
-  buildAuthClient: (uid: string) => Promise<OAuth2Client>;
+  /** OAuth providers implement this; populates ctx.oauth. */
+  buildAuthClient?: (uid: string) => Promise<OAuth2Client>;
+  /**
+   * Non-OAuth providers (e.g. Tech Trax JWT) implement this instead; populates
+   * ctx.client. Exactly one of buildAuthClient or buildClient must be defined.
+   */
+  buildClient?: (uid: string) => Promise<unknown>;
   exchangeCode: (code: string, redirectUri: string) => Promise<{ tokens: any; email: string }>;
   buildAuthUrl: (state: string, scopes: string[], redirectUri: string) => string;
   revoke: (refreshToken: string) => Promise<void>;
@@ -69,6 +104,12 @@ export interface PendingAction {
   result?: unknown;
   error?: string;
   summary: string;
+  /**
+   * Optimistic-lock token captured at preflight time (e.g. the lead's
+   * `Last-Modified` HTTP-date). Persisted so executeApprovedAction can send
+   * it as `If-Unmodified-Since` when the user confirms the write.
+   */
+  lockToken?: string;
 }
 
 export interface AuditLog {

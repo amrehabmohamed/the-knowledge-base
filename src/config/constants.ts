@@ -98,7 +98,12 @@ export const DEFAULT_MODEL_ID = "gemini-3-flash";
  * Cloud Functions base URL.
  */
 const PROJECT_ID = import.meta.env.VITE_FIREBASE_PROJECT_ID;
-export const FUNCTIONS_BASE_URL = `https://us-central1-${PROJECT_ID}.cloudfunctions.net`;
+const USE_EMULATORS = import.meta.env.VITE_USE_EMULATORS === "true";
+const EMULATOR_FUNCTIONS_HOST =
+  import.meta.env.VITE_EMULATOR_FUNCTIONS_HOST || "http://localhost:5002";
+export const FUNCTIONS_BASE_URL = USE_EMULATORS
+  ? `${EMULATOR_FUNCTIONS_HOST}/${PROJECT_ID}/us-central1`
+  : `https://us-central1-${PROJECT_ID}.cloudfunctions.net`;
 export const CHAT_FUNCTION_URL = `${FUNCTIONS_BASE_URL}/chat`;
 export const HEALTH_FUNCTION_URL = `${FUNCTIONS_BASE_URL}/health`;
 export const PING_FUNCTION_URL = `${FUNCTIONS_BASE_URL}/ping`;

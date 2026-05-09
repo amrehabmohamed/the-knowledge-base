@@ -88,7 +88,25 @@ function normalizeError(err: unknown): { code: string; message: string; retryabl
 export type DispatchResult =
   | { kind: "result"; data: unknown }
   | { kind: "awaiting_approval"; actionId: string; summary: string; provider: string }
-  | { kind: "scope_required"; provider: string; tool: string; missingScopes: string[] };
+  | { kind: "scope_required"; provider: string; tool: string; missingScopes: string[] }
+  | {
+      kind: "validation_pending";
+      provider: string;
+      tool: string;
+      missing: Array<{ key: string; label: string; type: string }>;
+      message: string;
+    };
+
+function isValidationPendingError(
+  err: unknown
+): err is { name: string; message: string; missing: Array<{ key: string; label: string; type: string }> } {
+  return (
+    !!err &&
+    typeof err === "object" &&
+    (err as { name?: unknown }).name === "ValidationPendingError" &&
+    Array.isArray((err as { missing?: unknown }).missing)
+  );
+}
 
 export async function dispatch(
   toolName: string,
@@ -120,17 +138,49 @@ export async function dispatch(
     args,
   });
 
+  // Build connector context once — reused for preflight, read handler, and (in
+  // the write path) for invoking optional preflight before creating the pending
+  // action so validation gaps surface as `validation_pending` chat questions
+  // rather than a confusing approval card the agent shouldn't have proposed.
+  const connectorCtx: ConnectorContext = {
+    uid: ctx.uid,
+    provider: provider.id,
+    sessionId: ctx.sessionId,
+    idempotencyKey,
+  };
+  if (provider.buildClient) {
+    connectorCtx.client = await provider.buildClient(ctx.uid);
+  } else if (provider.buildAuthClient) {
+    connectorCtx.oauth = await provider.buildAuthClient(ctx.uid);
+  } else {
+    throw new Error(
+      `Provider '${provider.id}' must implement buildAuthClient or buildClient`
+    );
+  }
+
+  // Pre-approval validation hook. If a tool defines preflight and it throws
+  // ValidationPendingError, we short-circuit for both read and write tools.
+  if (tool.preflight) {
+    try {
+      await tool.preflight(args, connectorCtx);
+    } catch (err) {
+      if (isValidationPendingError(err)) {
+        return {
+          kind: "validation_pending",
+          provider: provider.id,
+          tool: tool.name,
+          missing: err.missing,
+          message: err.message,
+        };
+      }
+      const norm = normalizeError(err);
+      throw norm;
+    }
+  }
+
   if (tool.class === "read") {
     const start = Date.now();
     try {
-      const oauth = await provider.buildAuthClient(ctx.uid);
-      const connectorCtx: ConnectorContext = {
-        uid: ctx.uid,
-        oauth,
-        provider: provider.id,
-        sessionId: ctx.sessionId,
-        idempotencyKey,
-      };
       const data = await tool.handler(args, connectorCtx);
       await writeAudit({
         uid: ctx.uid,
@@ -145,6 +195,18 @@ export async function dispatch(
       });
       return { kind: "result", data };
     } catch (err) {
+      if (isValidationPendingError(err)) {
+        // Short-circuit: do NOT create a pending action and do NOT write an
+        // error audit entry. Skip auditing for this kind (audit.ts has no
+        // matching status; keeping the write set unchanged).
+        return {
+          kind: "validation_pending",
+          provider: provider.id,
+          tool: tool.name,
+          missing: err.missing,
+          message: err.message,
+        };
+      }
       const norm = normalizeError(err);
       await writeAudit({
         uid: ctx.uid,
@@ -173,6 +235,9 @@ export async function dispatch(
       args,
       summary,
       idempotencyKey,
+      // Persist the optimistic-lock token captured during preflight so the
+      // approved-execution path can send it as `If-Unmodified-Since`.
+      lockToken: connectorCtx.lockToken,
     });
     await writeAudit({
       uid: ctx.uid,
@@ -221,14 +286,24 @@ export async function executeApprovedAction(actionId: string, uid: string): Prom
 
   const start = Date.now();
   try {
-    const oauth = await provider.buildAuthClient(uid);
     const connectorCtx: ConnectorContext = {
       uid,
-      oauth,
       provider: provider.id,
       sessionId: action.sessionId,
       idempotencyKey: action.idempotencyKey,
+      // Rehydrate the optimistic-lock token captured during dispatch-time
+      // preflight so the write below carries `If-Unmodified-Since`.
+      lockToken: action.lockToken,
     };
+    if (provider.buildClient) {
+      connectorCtx.client = await provider.buildClient(uid);
+    } else if (provider.buildAuthClient) {
+      connectorCtx.oauth = await provider.buildAuthClient(uid);
+    } else {
+      throw new Error(
+        `Provider '${provider.id}' must implement buildAuthClient or buildClient`
+      );
+    }
     const data = await tool.handler(action.args, connectorCtx);
     await markStatus(actionId, "executed", { result: data });
     await writeAudit({

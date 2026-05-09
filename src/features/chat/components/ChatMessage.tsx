@@ -5,7 +5,14 @@ import { CitationMarker } from "./CitationMarker";
 import { ToolCallList } from "./ToolCallCard";
 import { ActionApprovalList } from "./ActionApprovalCard";
 import { ScopeExpansionList } from "./ScopeExpansionCard";
-import type { Message, Citation, Attachment, ToolCall } from "@/types/session";
+import { ClarificationList } from "./ClarificationCard";
+import type {
+  Message,
+  Citation,
+  Attachment,
+  ToolCall,
+  ClarificationRecord,
+} from "@/types/session";
 import type {
   PendingActionEvent,
   ScopeExpansionEvent,
@@ -13,6 +20,8 @@ import type {
 
 interface ChatMessageProps {
   message: Message;
+  onClarificationSubmit?: (followUpMessage: string) => void;
+  onActionConfirmed?: (action: PendingActionEvent, result: unknown) => void;
 }
 
 interface StreamingMessageProps {
@@ -21,6 +30,9 @@ interface StreamingMessageProps {
   toolCalls?: ToolCall[];
   pendingActions?: PendingActionEvent[];
   scopeExpansions?: ScopeExpansionEvent[];
+  clarifications?: ClarificationRecord[];
+  onClarificationSubmit?: (followUpMessage: string) => void;
+  onActionConfirmed?: (action: PendingActionEvent, result: unknown) => void;
 }
 
 function formatMetrics(metrics: { ttftMs: number; totalMs: number }): string {
@@ -29,10 +41,27 @@ function formatMetrics(metrics: { ttftMs: number; totalMs: number }): string {
   return `TTFT: ${ttft}s | Total: ${total}s`;
 }
 
+/**
+ * `[continue]` is a system-internal continuation marker. The agent occasionally
+ * hallucinates the literal string from the system prompt and emits it as text.
+ * Scrub it from any rendered assistant content as a defense-in-depth on top of
+ * the prompt rule. We strip whole-token occurrences only — never a substring
+ * that happens to contain `[continue]` inside other text.
+ */
+function scrubContinueMarkers(content: string): string {
+  if (!content) return content;
+  const cleaned = content
+    .replace(/(^|\n)\s*\[continue\]\s*(\n|$)/gi, "$1$2")
+    .trim();
+  return cleaned;
+}
+
 function renderContentWithCitations(
   content: string,
   citations: Citation[]
 ): React.ReactNode {
+  content = scrubContinueMarkers(content);
+  if (!content) return null;
   if (!citations || citations.length === 0) {
     return <Markdown>{content}</Markdown>;
   }
@@ -102,7 +131,11 @@ function AttachmentPreview({ attachment }: { attachment: Attachment }) {
   );
 }
 
-export function ChatMessage({ message }: ChatMessageProps) {
+export function ChatMessage({
+  message,
+  onClarificationSubmit,
+  onActionConfirmed,
+}: ChatMessageProps) {
   const isUser = message.role === "user";
   const isSummary = message.role === "summary";
 
@@ -125,6 +158,10 @@ export function ChatMessage({ message }: ChatMessageProps) {
   }
 
   if (isUser) {
+    if (message.content === "[continue]" && !message.attachments?.length) {
+      return null;
+    }
+
     const dir = getTextDir(message.content);
     const attachments = message.attachments;
     const hasAttachments = attachments && attachments.length > 0;
@@ -165,7 +202,16 @@ export function ChatMessage({ message }: ChatMessageProps) {
           <ScopeExpansionList events={message.scopeExpansions} />
         )}
         {message.pendingActions && message.pendingActions.length > 0 && (
-          <ActionApprovalList actions={message.pendingActions} />
+          <ActionApprovalList
+            actions={message.pendingActions}
+            onConfirmed={onActionConfirmed}
+          />
+        )}
+        {message.clarifications && message.clarifications.length > 0 && (
+          <ClarificationList
+            clarifications={message.clarifications}
+            onSubmit={onClarificationSubmit}
+          />
         )}
         {message.metrics && (
           <p className="text-[11px] text-muted-foreground/50">
@@ -183,10 +229,14 @@ export function StreamingMessage({
   toolCalls,
   pendingActions,
   scopeExpansions,
+  clarifications,
+  onClarificationSubmit,
+  onActionConfirmed,
 }: StreamingMessageProps) {
   const hasTools = toolCalls && toolCalls.length > 0;
   const hasScope = scopeExpansions && scopeExpansions.length > 0;
   const hasPending = pendingActions && pendingActions.length > 0;
+  const hasClarifications = clarifications && clarifications.length > 0;
   return (
     <div className="flex gap-3">
       <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted mt-0.5">
@@ -196,14 +246,25 @@ export function StreamingMessage({
         {hasTools && <ToolCallList toolCalls={toolCalls!} />}
         {content ? (
           renderContentWithCitations(content, citations)
-        ) : !hasTools ? (
+        ) : !hasTools && !hasClarifications ? (
           <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
             <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-muted-foreground/50" />
             Thinking...
           </div>
         ) : null}
         {hasScope && <ScopeExpansionList events={scopeExpansions!} />}
-        {hasPending && <ActionApprovalList actions={pendingActions!} />}
+        {hasPending && (
+          <ActionApprovalList
+            actions={pendingActions!}
+            onConfirmed={onActionConfirmed}
+          />
+        )}
+        {hasClarifications && (
+          <ClarificationList
+            clarifications={clarifications!}
+            onSubmit={onClarificationSubmit}
+          />
+        )}
       </div>
     </div>
   );

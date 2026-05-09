@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { addDoc, updateDoc, increment, serverTimestamp } from "firebase/firestore";
 import { getMessagesCollection, getSessionRef } from "@/lib/firestore";
 import { streamChat } from "@/lib/streaming";
@@ -8,7 +8,12 @@ import { useSystemStatusContext } from "@/features/settings";
 import { uploadChatAttachment } from "@/features/chat/services/attachmentService";
 import { auth } from "@/lib/firebase";
 import type { Source } from "@/types/source";
-import type { Citation, Attachment, ToolCall } from "@/types/session";
+import type {
+  Citation,
+  Attachment,
+  ToolCall,
+  ClarificationRecord,
+} from "@/types/session";
 import type {
   PendingActionEvent,
   ScopeExpansionEvent,
@@ -50,6 +55,7 @@ export function useChat(notebookId: string, sources: Source[]) {
   // server-side.
   const [pendingActions, setPendingActions] = useState<PendingActionEvent[]>([]);
   const [scopeExpansions, setScopeExpansions] = useState<ScopeExpansionEvent[]>([]);
+  const [clarifications, setClarifications] = useState<ClarificationRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const startTimeRef = useRef<number>(0);
@@ -90,6 +96,7 @@ export function useChat(notebookId: string, sources: Source[]) {
       // their assistant message doc and will render via ChatMessage.
       setPendingActions([]);
       setScopeExpansions([]);
+      setClarifications([]);
       startTimeRef.current = Date.now();
       ttftRef.current = null;
 
@@ -145,6 +152,7 @@ export function useChat(notebookId: string, sources: Source[]) {
         .map((m) => ({
           role: m.role,
           content: m.content,
+          toolCalls: m.toolCalls ?? undefined,
         }));
 
       const controller = new AbortController();
@@ -155,6 +163,7 @@ export function useChat(notebookId: string, sources: Source[]) {
       let finalToolCalls: ToolCall[] = [];
       let finalPendingActions: PendingActionEvent[] = [];
       let finalScopeExpansions: ScopeExpansionEvent[] = [];
+      let finalClarifications: ClarificationRecord[] = [];
       let metricsData: { ttftMs: number; totalMs: number; tokenCount: number } | undefined;
 
       try {
@@ -206,6 +215,16 @@ export function useChat(notebookId: string, sources: Source[]) {
                 setScopeExpansions(finalScopeExpansions);
               }
             },
+            onClarificationRequired: (event) => {
+              if (
+                !finalClarifications.some(
+                  (c) => c.clarificationId === event.clarificationId
+                )
+              ) {
+                finalClarifications = [...finalClarifications, event];
+                setClarifications(finalClarifications);
+              }
+            },
             onMetrics: (metrics) => {
               metricsData = metrics;
             },
@@ -219,8 +238,17 @@ export function useChat(notebookId: string, sources: Source[]) {
           controller.signal
         );
 
-        // Write assistant message to Firestore
-        if (finalContent) {
+        // Write assistant message to Firestore. Persist whenever the turn
+        // produced *anything* the user should see — content, tool calls,
+        // approvals, scope asks, OR a clarification card. Without this, an
+        // ask_user-only turn (no assistant text) would vanish on reload.
+        const hasArtifacts =
+          finalContent.length > 0 ||
+          finalToolCalls.length > 0 ||
+          finalPendingActions.length > 0 ||
+          finalScopeExpansions.length > 0 ||
+          finalClarifications.length > 0;
+        if (hasArtifacts) {
           const clientTtft = ttftRef.current ?? 0;
           const clientTotal = Date.now() - startTimeRef.current;
 
@@ -234,6 +262,8 @@ export function useChat(notebookId: string, sources: Source[]) {
               finalPendingActions.length > 0 ? finalPendingActions : null,
             scopeExpansions:
               finalScopeExpansions.length > 0 ? finalScopeExpansions : null,
+            clarifications:
+              finalClarifications.length > 0 ? finalClarifications : null,
             tokenCount: metricsData?.tokenCount ?? 0,
             modelId: session.modelId,
             agentType: toolOverride ?? "filesearch",
@@ -269,6 +299,92 @@ export function useChat(notebookId: string, sources: Source[]) {
     await createSession(modelId);
   }, [session, archiveSession, createSession]);
 
+  /**
+   * Queue for an HITL auto-continuation. We can't just call sendMessage
+   * directly because the original chat turn's `setStreaming(false)` lives in
+   * a `finally` block that may not have flushed yet at the moment the user
+   * clicks Confirm — sendMessage's `if (streaming) return` guard would drop
+   * the call silently. Instead we set a pending flag here and a useEffect
+   * below fires the continuation as soon as streaming is actually false.
+   */
+  const pendingContinuationRef = useRef(false);
+
+  /**
+   * After an HITL action card resolves to "executed" (`confirmPendingAction`
+   * succeeded), record the executed tool call as a synthetic assistant
+   * message so the orchestrator's history-replay sees it on the next turn,
+   * then queue a `[continue]` follow-up so the agent can complete any
+   * remaining steps from the original multi-step request.
+   *
+   * Idempotency: keyed on `action.actionId`. If the agent already produced
+   * a follow-up turn referencing this action (or the user manually typed
+   * something), we skip the auto-continue but still record the result so
+   * history is consistent.
+   */
+  const recordExecutedAction = useCallback(
+    async (action: PendingActionEvent, result: unknown): Promise<void> => {
+      if (!session) return;
+      const messagesCol = getMessagesCollection(notebookId, session.id);
+      // Serialize the result into the same shape as a regular tool call's
+      // output so the orchestrator's history-replay picks it up uniformly.
+      const output =
+        typeof result === "string"
+          ? result
+          : JSON.stringify(result ?? null).slice(0, 8000);
+      const toolCallEntry: ToolCall = {
+        id: action.actionId,
+        name: action.tool,
+        args: action.args,
+        status: "done",
+        output,
+        startedAt: Date.now(),
+      };
+      try {
+        await addDoc(messagesCol, {
+          sessionId: session.id,
+          role: "assistant",
+          content: "",
+          citations: null,
+          toolCalls: [toolCallEntry],
+          tokenCount: 0,
+          modelId: session.modelId,
+          agentType: "hitl_executed",
+          metrics: null,
+          createdAt: serverTimestamp(),
+        });
+        await updateDoc(getSessionRef(notebookId, session.id), {
+          messageCount: increment(1),
+          updatedAt: serverTimestamp(),
+        });
+      } catch (err) {
+        // Non-fatal: history replay will be missing this entry but the agent
+        // can still attempt to continue (it may re-fetch which is fine).
+        console.error("[useChat] Failed to record executed HITL action:", err);
+      }
+      // Queue the continuation. The useEffect below will fire it as soon as
+      // streaming is false and the session has settled.
+      pendingContinuationRef.current = true;
+      // Try once immediately in case streaming is already false — the effect
+      // is a backstop for the race-window case.
+      if (!streaming) {
+        pendingContinuationRef.current = false;
+        void sendMessage("[continue]");
+      }
+    },
+    [session, notebookId, sendMessage, streaming]
+  );
+
+  // Backstop for the streaming-flush race: if recordExecutedAction was called
+  // while a previous turn was still wrapping up (its `finally setStreaming
+  // (false)` not yet flushed), the inline call no-ops. As soon as streaming
+  // flips false, fire the queued continuation.
+  useEffect(() => {
+    if (!streaming && pendingContinuationRef.current) {
+      pendingContinuationRef.current = false;
+      void sendMessage("[continue]");
+    }
+  }, [streaming, sendMessage]);
+
   return {
     session,
     messages,
@@ -279,11 +395,13 @@ export function useChat(notebookId: string, sources: Source[]) {
     streamingToolCalls,
     pendingActions,
     scopeExpansions,
+    clarifications,
     error,
     loading: sessionLoading || messagesLoading,
     readySources,
     sendMessage,
     resetSession,
     updateModel,
+    recordExecutedAction,
   };
 }

@@ -20,11 +20,15 @@ import {
 import {
   cancelPendingAction,
   confirmPendingAction,
+  getPendingActionStatus,
   type PendingActionEvent,
 } from "@/lib/connectors";
 import {
+  getActionState,
+  isActionResolved,
   setActionState,
   useActionState,
+  useActionStoreTick,
 } from "@/lib/connectorActionStore";
 
 type State =
@@ -121,6 +125,47 @@ export function ActionApprovalCard({
     if (state === "pending") setOpen(true);
     else setOpen(false);
   }, [state]);
+
+  // Hydrate runtime state from backend on mount when the in-memory store is
+  // empty (typical after a page refresh). Without this, a card the user
+  // already confirmed yesterday would render as if it's still pending.
+  // We only fetch once per actionId per page load, and only if no other
+  // instance of this card has already populated the store.
+  useEffect(() => {
+    if (getActionState(action.actionId)) return; // already hydrated
+    let cancelled = false;
+    (async () => {
+      try {
+        const persisted = await getPendingActionStatus(action.actionId);
+        if (cancelled || getActionState(action.actionId)) return;
+        const map: Record<string, State> = {
+          awaiting_approval: "pending",
+          executed: "executed",
+          cancelled: "cancelled",
+          expired: "expired",
+          error: "error",
+          approved: "confirming", // legacy intermediate, treat as in-flight
+        };
+        const next = map[persisted.status] ?? "pending";
+        // Don't write a "pending" entry — we want to leave runtime undefined
+        // for live cards so the local-lifecycle fallback (pending vs expired)
+        // keeps working without an extra render.
+        if (next === "pending") return;
+        setActionState(action.actionId, {
+          state: next,
+          result: persisted.result ?? undefined,
+          error: persisted.error ?? undefined,
+        });
+      } catch {
+        // Silent fail — leaving runtime empty falls back to local lifecycle.
+        // The most common silent path is `not-found` for a doc never created
+        // (shouldn't happen in practice) or auth not yet ready.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [action.actionId]);
 
   useEffect(() => {
     if (state !== "pending") return;
@@ -335,14 +380,46 @@ export function ActionApprovalCard({
 
 export function ActionApprovalList({
   actions,
+  onConfirmed,
 }: {
   actions: PendingActionEvent[];
+  /**
+   * Fires when a card resolves to "executed". The parent uses this to record
+   * the executed tool result as a synthetic assistant message AND auto-fire a
+   * `[continue]` follow-up so the agent can complete remaining steps.
+   */
+  onConfirmed?: (action: PendingActionEvent, result: unknown) => void;
 }) {
+  // Subscribe so the list re-renders (and unhides the next pending card) when
+  // any action's runtime state flips.
+  useActionStoreTick();
   if (!actions || actions.length === 0) return null;
+  // Serialize approvals: render every already-resolved card (so the user keeps
+  // a record of what they confirmed) plus the *first* still-pending card.
+  // Subsequent pending cards stay hidden until the user resolves the prior one.
+  // This avoids the "two modals racing while the first is still executing"
+  // confusion when the agent emits multiple HITL writes in one turn.
+  // We re-derive on every render via the runtime store; resolution flips the
+  // pending card to "executed/cancelled/error/expired" which then unhides the next.
+  const visible: PendingActionEvent[] = [];
+  let pendingShown = false;
+  for (const a of actions) {
+    if (isActionResolved(a.actionId)) {
+      visible.push(a);
+    } else if (!pendingShown) {
+      visible.push(a);
+      pendingShown = true;
+    }
+    // else: a later pending card, hidden for now.
+  }
   return (
     <div className="space-y-1.5">
-      {actions.map((a) => (
-        <ActionApprovalCard key={a.actionId} action={a} />
+      {visible.map((a) => (
+        <ActionApprovalCard
+          key={a.actionId}
+          action={a}
+          onConfirmed={(result) => onConfirmed?.(a, result)}
+        />
       ))}
     </div>
   );
