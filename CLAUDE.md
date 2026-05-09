@@ -2,6 +2,15 @@
 
 A single-user knowledge management tool inspired by NotebookLM. Upload documents and URLs, query them with Gemini FileSearch, and get cited answers.
 
+## ⚠️ Current Working State (read this first)
+
+- **Active branch**: `feat/multi-tool-orchestrator` (cut from `main`). Do NOT push to `main` or deploy to prod from this branch without explicit user approval.
+- **Active environment**: `staging` (Firebase project `the-knowledge-base-staging`). All deploys/tests during this work go there. Production (`the-knowledge-base-82d72`) is untouched and still runs the legacy single-tool code from `main`.
+- **What's in flight**: Phase 5 multi-tool orchestrator (FileSearch + 3 sub-agents + Jina prefetch + tool-call UI cards). See the Phase 5 entry in Build Status below.
+- **How to deploy to staging**: `firebase deploy --only functions --project staging` (or `npm run deploy:staging`). Frontend dev mode: `npm run dev:staging`.
+- **How to deploy to prod**: `firebase deploy --only functions --project prod` — but only AFTER the branch is reviewed, smoke-tested on staging, and the user has explicitly approved a merge to `main`.
+- **Feature flag**: `MULTI_TOOL_ENABLED=true` is set in `functions/.env.the-knowledge-base-staging` only. Prod stays `false` (legacy single-tool path) until verified.
+
 ## Tech Stack
 
 - **Frontend**: React + Vite + TypeScript, shadcn/ui + prompt-kit + Tailwind CSS
@@ -57,13 +66,18 @@ firebase deploy --only firestore:rules,firestore:indexes  # Deploy rules + index
 
 ## Environment
 
-- Firebase project: `the-knowledge-base-82d72`
-- Config in `.env` (gitignored), template in `.env.example`
-- Frontend vars use `VITE_` prefix
-- Function secrets in `functions/.env` (gitignored), accessed via `process.env`
-- `functions.config()` is deprecated — do NOT use it
-- Netlify env vars: `VITE_` vars must be set in Netlify dashboard (Project configuration → Environment variables) for production builds
-- Telegram bot secrets (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`) in `functions/.env` only (not needed on Netlify)
+- Firebase projects (aliases in `.firebaserc`):
+  - `prod` (default): `the-knowledge-base-82d72` — main user-facing project
+  - `staging`: `the-knowledge-base-staging` — for testing the multi-tool orchestrator and other risky changes before merging to `main`
+- Staging Storage bucket is `kb-staging-files` (custom name; the default `*.firebasestorage.app` and `*.appspot.com` were domain-locked). Mapped via `firebase target:apply storage staging kb-staging-files`. Frontend reads `VITE_FIREBASE_STORAGE_BUCKET` so this is transparent.
+- Staging FileSearch store: `fileSearchStores/kbstaging-v5jcj3myvved` (separate from prod store). Created via the Gemini API.
+- Staging reuses the prod Gemini API key + Jina API key (single-user app, low volume). Telegram is NOT deployed in staging.
+- `MULTI_TOOL_ENABLED=true` is set ONLY in `functions/.env.the-knowledge-base-staging` — prod stays on legacy single-tool path until verified.
+- Frontend env files: `.env` (prod), `.env.staging` (staging) — Vite picks via `--mode`. Run `npm run dev:staging` or `npm run build:staging` to target staging.
+- Functions env: `.env` (prod), `.env.the-knowledge-base-staging` (auto-loaded by Firebase CLI when deploying to that project). Do NOT use deprecated `functions.config()`.
+- Deploy commands: `firebase deploy --only functions --project staging` (or `npm run deploy:staging`). For prod use `--project prod` explicitly.
+- Frontend vars use `VITE_` prefix. Netlify env vars (Project config → Environment variables) are needed for prod hosting builds only.
+- Branch convention: risky/exploratory work (e.g. `feat/multi-tool-orchestrator`) lives on a feature branch, deploys to `staging` first, only merges to `main` after verification.
 
 ## Conventions
 
@@ -96,7 +110,12 @@ firebase deploy --only firestore:rules,firestore:indexes  # Deploy rules + index
 - Telegram formatting: Gemini Markdown → HTML conversion (`markdownToTelegramHtml`) with `"HTML"` parse mode
 - Telegram sessions: 24h auto-expiry, in-memory `chatStates` Map (rehydrated on cold start from Firestore)
 - Cloud Functions v2 requires `allUsers` invoker policy for public webhooks: `gcloud functions add-invoker-policy-binding <name> --member=allUsers`
-- Gemini built-in tools (FileSearch, googleSearch, urlContext, googleMaps) CANNOT be combined in the same request — use one at a time
+- Gemini built-in tools (FileSearch, googleSearch, urlContext, googleMaps) CANNOT be combined directly in the same request — official FileSearch docs explicitly forbid it. Multi-tool support is achieved via the orchestrator (`functions/src/services/orchestrator.ts`): parent Gemini 3 model runs FileSearch + custom function declarations (`web_search`, `maps_search`, `url_fetch`) with `includeServerSideToolInvocations: true`. Each function maps to a single-purpose sub-agent in `functions/src/services/subagents/` that runs ONE built-in tool on `gemini-3.1-flash-lite`. Lightweight QC validates each sub-agent result before it's exposed to the parent (soft mode: accepts non-empty summary even without grounding citations). Gated by `MULTI_TOOL_ENABLED` env flag; falls back to legacy single-tool path on Gemini 2.5 or when a slash command is used
+- Streaming part-merge for Gemini 3 thinking models (`functions/src/services/orchestrator.ts`): parts from each chunk are pushed in order, and any signature-only part (no data field) is folded into the most recent data-bearing part. This preserves `thoughtSignature` while keeping mutually-exclusive `oneof` data fields (text/functionCall/toolCall/toolResponse) on separate parts — the API rejects parts with multiple data fields set
+- URL prefetch via Jina Reader (`functions/src/services/urlPrefetch.ts`): when the user pastes URLs in their chat message, the orchestrator AND the legacy path call Jina to extract clean markdown (capped: 3 URLs/turn, 8000 chars each) and inject the content into the user message before sending to Gemini. Failures are logged and skipped — `url_fetch` sub-agent is still available as a fallback. Independent of `MULTI_TOOL_ENABLED` so prod gets URL prefetch too once merged
+- Tool call surfacing in the UI (`src/features/chat/components/ToolCallCard.tsx`): backend emits a new `tool_call` SSE event (`{id, name, args, status: running|done|error, output?, citations?, error?, durationMs?}`) for each Jina prefetch and each sub-agent dispatch. Frontend collects them into `streamingToolCalls` (in `useChat.ts`) and renders inline pills above the assistant message — click to expand the raw tool output. Persisted on the assistant message doc as `toolCalls?: ToolCall[]` so they survive reload. Tool-call events flow through `streaming.ts` via a new `onToolCall` callback. Server-side `toolCall`/`toolResponse` parts (Gemini's native FileSearch invocation) are NOT surfaced as cards in v1 — citations on the message already indicate FileSearch was used
+- Soft QC mode (`functions/src/services/subagents/qc.ts`): sub-agent results are accepted as long as `summary.trim()` is non-empty. Zero-grounding-citation results are logged (`[QC <name>] soft-pass`) and passed through, not rejected. Tighten later if hallucinations become a problem
+- Markdown link styling (`src/components/ui/markdown.tsx`): `<a>` tags rendered by ReactMarkdown use the standard blue underline (`text-blue-600 underline`), open in new tab with `noopener noreferrer`, and `break-all` so long URLs wrap inside the chat bubble
 - Web tools via slash commands: `/web` (Google Search), `/maps` (Google Maps), `/url` (URL Context) — parsed in frontend (`useChat.ts`) and Telegram (`chat.ts`), sent as `toolOverride` param to backend
 - Default tool is always FileSearch (uploaded sources); slash commands override to a specific web tool for that message only
 - Per-notebook tool toggles stored as `tools` field on notebook doc (e.g. `{ googleSearch: true }`) — controls which tools are available but slash commands are the actual trigger
@@ -118,6 +137,7 @@ firebase deploy --only firestore:rules,firestore:indexes  # Deploy rules + index
 - **Phase 2**: Complete (Telegram bot — email OTP linking, notebook/model selection, session management, rate limiting, channel-aware prompts, location support, HTML formatting)
 - **Phase 3**: Complete (Web tools — Google Search, Google Maps, URL Context via slash commands /web /maps /url, per-notebook tool settings, slash command menu in web UI)
 - **Phase 4**: Complete (Multimodal chat — image/audio/PDF attachments in web and Telegram, Gemini native vision/audio understanding)
+- **Phase 5** (in-progress on `feat/multi-tool-orchestrator`, deployed to staging only): Multi-tool orchestrator. Parent Gemini 3 model coordinates FileSearch + 3 single-purpose sub-agents (`web_search`, `maps_search`, `url_fetch`) running on `gemini-3.1-flash-lite` via custom function declarations + `includeServerSideToolInvocations: true`. Lightweight QC, Jina URL prefetch as a pre-step, tool-call cards in the UI, blue-link styling. Gated by `MULTI_TOOL_ENABLED` env flag (`true` on staging, off on prod). Falls back to legacy single-tool path on Gemini 2.5 or when a slash command is used. Not yet merged to `main`/prod
 
 ## Full Requirements
 

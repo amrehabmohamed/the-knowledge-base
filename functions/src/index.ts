@@ -5,7 +5,7 @@ import * as admin from "firebase-admin";
 import {
   uploadToGeminiStore,
   deleteFromGeminiStore,
-  queryWithFileSearch,
+  routeChat,
 } from "./services/gemini";
 import { extractUrl } from "./services/jina";
 import { summarizeSession } from "./services/summarize";
@@ -13,6 +13,7 @@ import { validateAuth } from "./middleware/auth";
 import {
   SUMMARIZATION_THRESHOLD,
   SUMMARIZATION_COOLDOWN_MS,
+  getStorageBucketName,
 } from "./config";
 import { telegramWebhook } from "./telegram/webhook";
 import type { Source } from "./types";
@@ -119,7 +120,7 @@ export const deleteNotebookData = onCall(async (request) => {
   }
 
   const db = admin.firestore();
-  const storage = admin.storage().bucket();
+  const storage = admin.storage().bucket(getStorageBucketName());
   const uid = request.auth.uid;
 
   // Verify notebook ownership
@@ -251,7 +252,7 @@ export const ingestUrl = onCall(
 
       // Save extracted markdown to Cloud Storage
       const storagePath = `users/${uid}/notebooks/${notebookId}/sources/${sourceId}/extracted.md`;
-      const bucket = admin.storage().bucket();
+      const bucket = admin.storage().bucket(getStorageBucketName());
       const file = bucket.file(storagePath);
       const buffer = Buffer.from(markdown, "utf-8");
       await file.save(buffer, { contentType: "text/markdown" });
@@ -331,7 +332,7 @@ export const deleteSource = onCall(async (request) => {
   // Delete from Cloud Storage
   if (source.storageRef) {
     try {
-      await admin.storage().bucket().file(source.storageRef).delete();
+      await admin.storage().bucket(getStorageBucketName()).file(source.storageRef).delete();
     } catch {
       // File may not exist
     }
@@ -500,7 +501,7 @@ export const chat = onRequest(
     let firstTokenTime: number | null = null;
 
     try {
-      const stream = queryWithFileSearch(
+      const stream = routeChat(
         query ?? "",
         chatHistory,
         notebookId,
@@ -523,6 +524,10 @@ export const chat = onRequest(
         } else if (chunk.type === "citations") {
           res.write(
             `event: citations\ndata: ${JSON.stringify({ citations: chunk.citations })}\n\n`
+          );
+        } else if (chunk.type === "tool_call") {
+          res.write(
+            `event: tool_call\ndata: ${JSON.stringify(chunk.toolCall)}\n\n`
           );
         } else if (chunk.type === "done") {
           const totalMs = Date.now() - startTime;

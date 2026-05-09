@@ -2,7 +2,8 @@ import { Bot, FileText, Music } from "lucide-react";
 import { Markdown } from "@/components/ui/markdown";
 import { getTextDir } from "@/lib/utils";
 import { CitationMarker } from "./CitationMarker";
-import type { Message, Citation, Attachment } from "@/types/session";
+import { ToolCallList } from "./ToolCallCard";
+import type { Message, Citation, Attachment, ToolCall } from "@/types/session";
 
 interface ChatMessageProps {
   message: Message;
@@ -11,6 +12,7 @@ interface ChatMessageProps {
 interface StreamingMessageProps {
   content: string;
   citations: Citation[];
+  toolCalls?: ToolCall[];
 }
 
 function formatMetrics(metrics: { ttftMs: number; totalMs: number }): string {
@@ -27,8 +29,9 @@ function renderContentWithCitations(
     return <Markdown>{content}</Markdown>;
   }
 
-  // Split content by citation markers [N]
-  const parts = content.split(/(\[\d+\])/g);
+  // Split content by citation markers [N] — but NOT when followed by `(`,
+  // which would mean it's part of a markdown link `[N](https://...)`.
+  const parts = content.split(/(\[\d+\](?!\())/g);
 
   const dir = getTextDir(content);
 
@@ -142,7 +145,10 @@ export function ChatMessage({ message }: ChatMessageProps) {
       <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted mt-0.5">
         <Bot className="h-3.5 w-3.5 text-muted-foreground" />
       </div>
-      <div className="min-w-0 flex-1 space-y-1">
+      <div className="min-w-0 flex-1 space-y-2">
+        {message.toolCalls && message.toolCalls.length > 0 && (
+          <ToolCallList toolCalls={message.toolCalls} />
+        )}
         {renderContentWithCitations(
           message.content,
           message.citations ?? []
@@ -160,21 +166,24 @@ export function ChatMessage({ message }: ChatMessageProps) {
 export function StreamingMessage({
   content,
   citations,
+  toolCalls,
 }: StreamingMessageProps) {
+  const hasTools = toolCalls && toolCalls.length > 0;
   return (
     <div className="flex gap-3">
       <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted mt-0.5">
         <Bot className="h-3.5 w-3.5 text-muted-foreground" />
       </div>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 space-y-2">
+        {hasTools && <ToolCallList toolCalls={toolCalls!} />}
         {content ? (
           renderContentWithCitations(content, citations)
-        ) : (
+        ) : !hasTools ? (
           <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
             <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-muted-foreground/50" />
             Thinking...
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );

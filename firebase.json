@@ -16,7 +16,13 @@
       ]
     }
   ],
-  "storage": {
-    "rules": "storage.rules"
-  }
+  "storage": [
+    {
+      "rules": "storage.rules"
+    },
+    {
+      "target": "staging",
+      "rules": "storage.rules"
+    }
+  ]
 }

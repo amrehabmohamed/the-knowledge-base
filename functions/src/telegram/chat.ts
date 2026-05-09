@@ -1,11 +1,12 @@
 import * as admin from "firebase-admin";
-import { queryWithFileSearch, type ChatAttachment } from "../services/gemini";
+import { routeChat, type ChatAttachment } from "../services/gemini";
 import { summarizeSession } from "../services/summarize";
 import {
   TELEGRAM_SESSION_TTL_MS,
   TELEGRAM_DEFAULT_MODEL,
   SUMMARIZATION_THRESHOLD,
   SUMMARIZATION_COOLDOWN_MS,
+  getStorageBucketName,
 } from "../config";
 import { sendMessage, sendChatAction, streamResponse, downloadTelegramFile } from "./telegramClient";
 import { checkRateLimit } from "./rateLimiter";
@@ -117,7 +118,7 @@ async function extractTelegramMedia(
 
   if (mediaItems.length === 0) return { attachments, chatAttachments };
 
-  const bucket = admin.storage().bucket();
+  const bucket = admin.storage().bucket(getStorageBucketName());
 
   for (const item of mediaItems) {
     // Size check
@@ -246,7 +247,7 @@ export async function handleChatMessage(chatId: number, message: TelegramMessage
     }
 
     // 7. Query with selected tool + attachments
-    const stream = queryWithFileSearch(
+    const stream = routeChat(
       actualQuery,
       history,
       notebookId,

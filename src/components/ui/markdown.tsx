@@ -55,6 +55,22 @@ const INITIAL_COMPONENTS: Partial<Components> = {
   pre: function PreComponent({ children }) {
     return <>{children}</>
   },
+  a: function AnchorComponent({ className, children, href, ...props }) {
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={cn(
+          "text-blue-600 underline underline-offset-2 hover:text-blue-700 break-all",
+          className
+        )}
+        {...props}
+      >
+        {children}
+      </a>
+    )
+  },
 }
 
 const MemoizedMarkdownBlock = memo(

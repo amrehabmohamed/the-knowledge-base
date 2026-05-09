@@ -14,6 +14,17 @@ export function getGeminiStoreId(): string {
   return id;
 }
 
+/**
+ * Bucket name for admin.storage().bucket(...). Falls back to undefined which
+ * means "use the project's default bucket" — works in prod where the default
+ * bucket exists. In staging the default *.firebasestorage.app bucket couldn't
+ * be created due to domain ownership conflict, so STORAGE_BUCKET must point at
+ * the custom bucket (e.g. kb-staging-files).
+ */
+export function getStorageBucketName(): string | undefined {
+  return process.env.STORAGE_BUCKET || undefined;
+}
+
 export function getJinaApiKey(): string {
   const key = process.env.JINA_API_KEY;
   if (!key) {
@@ -25,9 +36,22 @@ export function getJinaApiKey(): string {
 export const GEMINI_MODELS: Record<string, string> = {
   "gemini-3-flash": "gemini-3-flash-preview",
   "gemini-3.1-pro": "gemini-3.1-pro-preview",
+  "gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
   "gemini-2.5-pro": "gemini-2.5-pro",
   "gemini-2.5-flash": "gemini-2.5-flash",
 };
+
+// Sub-agents always run on this lightweight Gemini 3 model — one tool, one call.
+export const GEMINI_SUBAGENT_MODEL =
+  process.env.GEMINI_SUBAGENT_MODEL || "gemini-3.1-flash-lite";
+
+// Stable fallback when the user-selected model errors / is rate-limited.
+export const GEMINI_FALLBACK_MODEL =
+  process.env.GEMINI_FALLBACK_MODEL || "gemini-3.1-flash-lite";
+
+// Multi-tool orchestrator (FileSearch + custom function declarations) — gated by env.
+export const MULTI_TOOL_ENABLED =
+  (process.env.MULTI_TOOL_ENABLED || "false").toLowerCase() === "true";
 
 export const SYSTEM_PROMPT = `You are a personal research assistant grounded exclusively in the user's uploaded sources.
 
@@ -67,6 +91,18 @@ export const CHANNEL_PROMPT_OVERRIDES: Record<string, string> = {
 };
 
 export const WEB_TOOLS_PROMPT_ADDON = `You also have access to web tools (search, URL reading, or maps). Always prefer the user's uploaded documents first. If the uploaded sources do not contain relevant information to answer the question, or the user asks about current events, news, or topics outside their documents, use your web tools to find the answer instead. When you cannot find the answer in the uploaded sources, do NOT say you can't answer — use your web tools to help. When citing web sources, clearly distinguish them from document sources.`;
+
+// Used by the orchestrator (parent model) to describe the function-call sub-agents.
+export const WEB_TOOLS_PROMPT_ADDON_V2 = `You have File Search over the user's uploaded sources, plus three callable functions:
+- web_search(query): public web search via Google. Use for current events, news, or facts NOT in the uploaded sources.
+- maps_search(query, latLng?): geographic search (places, addresses, POIs). Use for location-aware questions.
+- url_fetch(urls[]): fetch and summarize specific URLs. Use only when the user gives URLs or you need a specific page already known.
+
+Behavior:
+- Always try File Search first. Call functions only when the answer is not in the uploaded sources, or to enrich/verify with external context.
+- You MAY call multiple functions in the same turn when they cover different gaps. Each function is a single-purpose sub-agent — do not ask one to do another's job.
+- Cite every claim. File Search citations and web/maps/url citations should both appear inline as [n] markers.
+- If a function returns "no results" or an error, do not invent content — say what you found and what was missing.`;
 
 export const SUMMARIZATION_PROMPT = `Compress the following conversation into a concise summary that preserves:
 - The original questions asked and their context
