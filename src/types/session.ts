@@ -11,6 +11,15 @@ export interface Session {
   updatedAt: Timestamp;
   archivedAt: Timestamp | null;
   lastSummarizationFailedAt?: Timestamp | null;
+  /**
+   * Cached prefix for the Gemini orchestrator (model + system prompt + tools),
+   * keyed per session and refreshed on each turn. Managed by the backend.
+   */
+  geminiCache?: {
+    name: string;
+    hash: string;
+    expiresAt: number;
+  } | null;
 }
 
 export interface Citation {
@@ -42,6 +51,13 @@ export interface ToolCall {
   /** Wall-clock duration in ms (set when status transitions to done/error) */
   durationMs?: number;
   startedAt: number;
+  /**
+   * True when this is the orchestrator's HITL *proposal* — the actual write
+   * runs later via confirmPendingAction and is recorded as a separate
+   * `hitl_executed` synthetic assistant message. Backend history-replay skips
+   * these to avoid the agent seeing the same logical write twice.
+   */
+  awaitingApproval?: boolean;
 }
 
 export interface MessageMetrics {
@@ -79,6 +95,25 @@ export interface ScopeExpansionRecord {
   missingScopes: string[];
 }
 
+/**
+ * A clarification ask emitted by the orchestrator's `ask_user` control tool.
+ * Persisted on the assistant message doc so the form survives reload (resolution
+ * state itself lives in `clarificationStore` for v1).
+ */
+export interface ClarificationQuestionRecord {
+  key: string;
+  prompt: string;
+  type: "text" | "date" | "select";
+  options?: Array<{ id: string; label: string }>;
+  required?: boolean;
+}
+
+export interface ClarificationRecord {
+  clarificationId: string;
+  reason: string;
+  questions: ClarificationQuestionRecord[];
+}
+
 export interface Message {
   id: string;
   sessionId: string;
@@ -93,6 +128,7 @@ export interface Message {
   toolCalls?: ToolCall[] | null;
   pendingActions?: PendingActionRecord[] | null;
   scopeExpansions?: ScopeExpansionRecord[] | null;
+  clarifications?: ClarificationRecord[] | null;
   superseded?: boolean;
   createdAt: Timestamp;
 }

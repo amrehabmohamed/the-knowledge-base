@@ -135,6 +135,14 @@ export interface ToolCallEvent {
   citations?: ChatCitation[];
   error?: string;
   durationMs?: number;
+  /**
+   * True when this tool_call is the orchestrator's *proposal* of a HITL-gated
+   * write — the actual execution happens later via `confirmPendingAction` and
+   * is recorded as a separate synthetic `hitl_executed` assistant message.
+   * History-replay skips these to avoid the model seeing the same logical write
+   * twice (once as a "done" proposal, once as the real executed result).
+   */
+  awaitingApproval?: boolean;
 }
 
 export interface ActionApprovalEvent {
@@ -152,12 +160,66 @@ export interface ScopeExpansionEvent {
   missingScopes: string[];
 }
 
+/**
+ * Single question inside a ClarificationRequiredEvent. The agent batches
+ * multiple of these into one ask so the user fills the form once and the
+ * agent gets everything in a single follow-up turn.
+ */
+export interface ClarificationQuestion {
+  /** Stable id; FE echoes it in the answers object. */
+  key: string;
+  /** Human-readable question. */
+  prompt: string;
+  /** Input shape: free text, ISO date, or one-of options. */
+  type: "text" | "date" | "select";
+  /** For type === "select" — the candidate values. */
+  options?: Array<{ id: string; label: string }>;
+  required?: boolean;
+}
+
+export interface ClarificationRequiredEvent {
+  /** Stable id used to track resolution across reload. */
+  clarificationId: string;
+  /** One-line "why I'm asking" surfaced above the form. */
+  reason: string;
+  questions: ClarificationQuestion[];
+}
+
+/**
+ * Persisted snapshot of a Gemini context cache attached to a session.
+ * Stored on the session doc as `geminiCache` so subsequent turns can reuse
+ * the cached prefix (system prompt + tool declarations) instead of resending it.
+ */
+export interface GeminiCacheRecord {
+  /** Full Gemini cache resource name (e.g. "cachedContents/abc123"). */
+  name: string;
+  /** SHA-256 of the prefix that was cached — used to invalidate on prompt/tool changes. */
+  hash: string;
+  /** Epoch ms when the cache expires server-side. */
+  expiresAt: number;
+}
+
+/** Minimal shape of a persisted prior tool call, replayed into Gemini history. */
+export interface PriorToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  status: "running" | "done" | "error";
+  output?: string;
+  error?: string;
+  citations?: ChatCitation[];
+  /** See ToolCallEvent.awaitingApproval — replay skips entries with this flag. */
+  awaitingApproval?: boolean;
+}
+
 export type ChatChunk =
   | { type: "token"; text: string }
   | { type: "citations"; citations: ChatCitation[] }
   | { type: "tool_call"; toolCall: ToolCallEvent }
   | { type: "action_approval_required"; action: ActionApprovalEvent }
   | { type: "scope_expansion_required"; scope: ScopeExpansionEvent }
+  | { type: "clarification_required"; clarification: ClarificationRequiredEvent }
+  | { type: "cache_event"; cache: GeminiCacheRecord }
   | { type: "done"; totalTokens: number };
 
 /**
@@ -309,7 +371,7 @@ async function prepareMultimodalParts(
 
 export async function* queryWithFileSearch(
   query: string,
-  history: Array<{ role: string; content: string }>,
+  history: Array<{ role: string; content: string; toolCalls?: PriorToolCall[] }>,
   notebookId: string,
   modelId: string,
   customSystemPrompt?: string,
@@ -452,7 +514,7 @@ export function isGemini3(apiModelId: string): boolean {
  */
 export function routeChat(
   query: string,
-  history: Array<{ role: string; content: string }>,
+  history: Array<{ role: string; content: string; toolCalls?: PriorToolCall[] }>,
   uid: string,
   notebookId: string,
   sessionId: string | undefined,
@@ -461,7 +523,8 @@ export function routeChat(
   channel: "web" | "telegram" = "web",
   enabledTools: Record<string, boolean> = {},
   toolOverride?: string,
-  attachments?: ChatAttachment[]
+  attachments?: ChatAttachment[],
+  existingCacheName?: string
 ): AsyncGenerator<ChatChunk> {
   const apiModel = GEMINI_MODELS[modelId] || "gemini-2.5-flash";
   const useOrchestrator =
@@ -483,7 +546,8 @@ export function routeChat(
       modelId,
       customSystemPrompt,
       channel,
-      attachments
+      attachments,
+      existingCacheName
     );
   }
   return queryWithFileSearch(

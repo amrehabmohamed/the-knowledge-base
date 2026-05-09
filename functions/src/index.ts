@@ -2,6 +2,7 @@ import { onRequest } from "firebase-functions/https";
 import { onCall, HttpsError } from "firebase-functions/https";
 import { onDocumentUpdated } from "firebase-functions/firestore";
 import * as admin from "firebase-admin";
+import { FieldValue } from "firebase-admin/firestore";
 import {
   uploadToGeminiStore,
   deleteFromGeminiStore,
@@ -75,7 +76,7 @@ export const onSourceStatusChange = onDocumentUpdated(
       // Set status to indexing
       await sourceRef.update({
         status: "indexing",
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
 
       // Build metadata from notebook_id + user tags
@@ -105,7 +106,7 @@ export const onSourceStatusChange = onDocumentUpdated(
         geminiDocId,
         failureReason: null,
         processingMs,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
 
       console.log(`Source ${sourceId} indexed successfully as ${geminiDocId}`);
@@ -117,7 +118,7 @@ export const onSourceStatusChange = onDocumentUpdated(
       await sourceRef.update({
         status: "failed",
         failureReason: message,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
     }
   }
@@ -260,8 +261,8 @@ export const ingestUrl = onCall(
       tags: [],
       startedAt: Date.now(),
       processingMs: null,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
 
     try {
@@ -281,7 +282,7 @@ export const ingestUrl = onCall(
         storageRef: storagePath,
         sizeBytes: buffer.byteLength,
         status: "pending",
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
 
       return { success: true, sourceId };
@@ -291,7 +292,7 @@ export const ingestUrl = onCall(
       await sourceRef.update({
         status: "failed",
         failureReason: message,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
       return { success: false, error: message };
     }
@@ -416,12 +417,30 @@ export const chat = onRequest(
     // --- Summarization check ---
     let chatHistory = history ?? [];
 
+    // Existing Gemini context cache for this session, if any. Reused only when
+    // it hasn't expired (60s safety margin). Hash gating happens orchestrator-
+    // side: if the cached prefix doesn't match the current prefix hash, the
+    // orchestrator will overwrite the session's cache record on this turn.
+    let existingCacheName: string | undefined;
+
     if (sessionId) {
       const sessionRef = db.doc(
         `notebooks/${notebookId}/sessions/${sessionId}`
       );
       const sessionSnap = await sessionRef.get();
       const sessionData = sessionSnap.data();
+
+      const cache = sessionData?.geminiCache as
+        | { name?: string; hash?: string; expiresAt?: number }
+        | null
+        | undefined;
+      if (
+        cache?.name &&
+        typeof cache.expiresAt === "number" &&
+        cache.expiresAt > Date.now() + 60_000
+      ) {
+        existingCacheName = cache.name;
+      }
 
       if (
         sessionData &&
@@ -479,14 +498,14 @@ export const chat = onRequest(
                 agentType: "summarizer",
                 metrics: null,
                 superseded: false,
-                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                createdAt: FieldValue.serverTimestamp(),
               }
             );
 
             // Update session token count
             batch.update(sessionRef, {
-              totalTokens: admin.firestore.FieldValue.increment(sumTokens),
-              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              totalTokens: FieldValue.increment(sumTokens),
+              updatedAt: FieldValue.serverTimestamp(),
             });
 
             await batch.commit();
@@ -501,7 +520,7 @@ export const chat = onRequest(
             console.error("[SUMMARIZE] Failed:", err);
             await sessionRef.update({
               lastSummarizationFailedAt:
-                admin.firestore.FieldValue.serverTimestamp(),
+                FieldValue.serverTimestamp(),
             });
             // Continue with original history
           }
@@ -530,7 +549,8 @@ export const chat = onRequest(
         "web",
         notebookTools,
         toolOverride,
-        attachments
+        attachments,
+        existingCacheName
       );
 
       for await (const chunk of stream) {
@@ -557,6 +577,23 @@ export const chat = onRequest(
           res.write(
             `event: scope_expansion_required\ndata: ${JSON.stringify(chunk.scope)}\n\n`
           );
+        } else if (chunk.type === "clarification_required") {
+          res.write(
+            `event: clarification_required\ndata: ${JSON.stringify(chunk.clarification)}\n\n`
+          );
+        } else if (chunk.type === "cache_event") {
+          // Server-side state only — no SSE event. Persist on the session doc
+          // so the next turn can reuse the cache name + hash.
+          if (sessionId) {
+            db.doc(`notebooks/${notebookId}/sessions/${sessionId}`)
+              .update({
+                geminiCache: chunk.cache,
+                updatedAt: FieldValue.serverTimestamp(),
+              })
+              .catch((err: unknown) =>
+                console.error("[CHAT] Failed to persist geminiCache:", err)
+              );
+          }
         } else if (chunk.type === "done") {
           const totalMs = Date.now() - startTime;
           const ttftMs = firstTokenTime
@@ -572,8 +609,8 @@ export const chat = onRequest(
           if (sessionId && tokenCount > 0) {
             db.doc(`notebooks/${notebookId}/sessions/${sessionId}`)
               .update({
-                totalTokens: admin.firestore.FieldValue.increment(tokenCount),
-                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                totalTokens: FieldValue.increment(tokenCount),
+                updatedAt: FieldValue.serverTimestamp(),
               })
               .catch((err: unknown) =>
                 console.error("[CHAT] Failed to update totalTokens:", err)
@@ -737,7 +774,7 @@ export const getConnectorStatus = onCall(async (request) => {
       return {
         provider: provider.id,
         connected: true,
-        email: rec.googleAccountEmail,
+        email: rec.googleAccountEmail ?? (rec as { email?: string }).email,
         scopes: rec.scopes,
         connectedAt: rec.connectedAt?.toDate().toISOString(),
       };
@@ -781,15 +818,18 @@ export const disconnectConnector = onCall(async (request) => {
     }
     await ref.update({
       status: "revoked",
-      refreshTokenCt: admin.firestore.FieldValue.delete(),
-      accessTokenCt: admin.firestore.FieldValue.delete(),
-      accessTokenExpiry: admin.firestore.FieldValue.delete(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      refreshTokenCt: FieldValue.delete(),
+      accessTokenCt: FieldValue.delete(),
+      accessTokenExpiry: FieldValue.delete(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
   }
 
   return { ok: true };
 });
+
+export { connectTechTraxCrm } from "./services/connectors/tech_trax_crm/connectCallable";
+export { techTraxCredentialsForm } from "./services/connectors/tech_trax_crm/credentialsForm";
 
 export const confirmPendingAction = onCall(async (request) => {
   if (!request.auth) {
@@ -825,8 +865,20 @@ export const confirmPendingAction = onCall(async (request) => {
     const result = await executeApprovedAction(actionId, uid);
     return { ok: true, result };
   } catch (err: unknown) {
+    // Registry throws a normalized {code, message, retryable} object on handler
+    // failure — not an Error instance. Pull `.message` from object form too,
+    // otherwise the user sees a generic "Action execution failed." with no signal.
     const message =
-      err instanceof Error ? err.message : "Action execution failed.";
+      err instanceof Error
+        ? err.message
+        : err && typeof err === "object" && "message" in err
+          ? String((err as { message?: unknown }).message)
+          : "Action execution failed.";
+    console.error(
+      `[CONFIRM] action=${actionId} tool=${pending.tool} failed:`,
+      message,
+      err
+    );
     return { ok: false, error: message };
   }
 });
@@ -868,4 +920,41 @@ export const cancelPendingAction = onCall(async (request) => {
   });
 
   return { ok: true };
+});
+
+/**
+ * Read-only status fetch for a pending action. Used by the frontend card on
+ * mount when its runtime store is empty (e.g. after a page refresh) so it
+ * can render the correct resolution (executed / cancelled / error / expired)
+ * instead of falsely showing a still-clickable Confirm button.
+ */
+export const getPendingActionStatus = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Must be authenticated.");
+  }
+  const actionId = request.data?.actionId;
+  if (!actionId || typeof actionId !== "string") {
+    throw new HttpsError("invalid-argument", "actionId is required.");
+  }
+  const uid = request.auth.uid;
+  const pending = await getPendingAction(actionId);
+  if (!pending) {
+    // Doc was never written or was already TTL-cleaned. Treat as expired so
+    // the card collapses without the card-mount path retrying.
+    return { status: "expired" as const };
+  }
+  if (pending.uid !== uid) {
+    throw new HttpsError("permission-denied", "Action does not belong to user");
+  }
+  // If still nominally awaiting_approval but past its expiry, surface as
+  // expired without rewriting (we don't want a read endpoint mutating state).
+  const expired =
+    pending.status === "awaiting_approval" &&
+    pending.expiresAt.toMillis() < Date.now();
+  return {
+    status: expired ? ("expired" as const) : pending.status,
+    result: pending.result ?? null,
+    error: pending.error ?? null,
+    expiresAt: pending.expiresAt.toMillis(),
+  };
 });

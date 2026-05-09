@@ -1,6 +1,11 @@
 import { useEffect, useRef } from "react";
 import { ChatMessage, StreamingMessage } from "./ChatMessage";
-import type { Message, Citation, ToolCall } from "@/types/session";
+import type {
+  Message,
+  Citation,
+  ToolCall,
+  ClarificationRecord,
+} from "@/types/session";
 import type {
   PendingActionEvent,
   ScopeExpansionEvent,
@@ -14,6 +19,9 @@ interface MessageListProps {
   streamingToolCalls: ToolCall[];
   pendingActions?: PendingActionEvent[];
   scopeExpansions?: ScopeExpansionEvent[];
+  clarifications?: ClarificationRecord[];
+  onClarificationSubmit?: (followUpMessage: string) => void;
+  onActionConfirmed?: (action: PendingActionEvent, result: unknown) => void;
 }
 
 export function MessageList({
@@ -24,6 +32,9 @@ export function MessageList({
   streamingToolCalls,
   pendingActions,
   scopeExpansions,
+  clarifications,
+  onClarificationSubmit,
+  onActionConfirmed,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -37,7 +48,12 @@ export function MessageList({
         {messages
           .filter((msg) => !msg.superseded)
           .map((msg) => (
-            <ChatMessage key={msg.id} message={msg} />
+            <ChatMessage
+              key={msg.id}
+              message={msg}
+              onClarificationSubmit={onClarificationSubmit}
+              onActionConfirmed={onActionConfirmed}
+            />
           ))}
 
         {streaming && (
@@ -47,6 +63,9 @@ export function MessageList({
             toolCalls={streamingToolCalls}
             pendingActions={pendingActions}
             scopeExpansions={scopeExpansions}
+            clarifications={clarifications}
+            onClarificationSubmit={onClarificationSubmit}
+            onActionConfirmed={onActionConfirmed}
           />
         )}
 

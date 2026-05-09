@@ -26,6 +26,7 @@ export interface CreatePendingActionInput {
   summary: string;
   idempotencyKey: string;
   ttlSec?: number;
+  lockToken?: string;
 }
 
 export async function createPendingAction(input: CreatePendingActionInput): Promise<{ actionId: string }> {
@@ -43,6 +44,7 @@ export async function createPendingAction(input: CreatePendingActionInput): Prom
     status: "awaiting_approval",
     createdAt: Timestamp.fromMillis(now),
     expiresAt: Timestamp.fromMillis(now + ttlSec * 1000),
+    lockToken: input.lockToken,
   };
   const ref = await db.collection("pendingActions").add(stripUndefined(doc));
   return { actionId: ref.id };

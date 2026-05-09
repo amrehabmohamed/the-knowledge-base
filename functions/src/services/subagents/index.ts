@@ -38,6 +38,23 @@ export async function dispatch(
         const summary = JSON.stringify(result.data, null, 2).slice(0, 8000);
         return { ok: true, summary, citations: [], rawTokens: 0 };
       }
+      if (result.kind === "validation_pending") {
+        // Surface as a normal tool result so the parent model sees the
+        // missing-fields payload and can ask the user in chat.
+        const payload = {
+          status: "validation_pending",
+          provider: result.provider,
+          tool: result.tool,
+          missing: result.missing,
+          message: result.message,
+        };
+        return {
+          ok: true,
+          summary: JSON.stringify(payload, null, 2),
+          citations: [],
+          rawTokens: 0,
+        };
+      }
       if (result.kind === "scope_required") {
         return {
           ok: true,

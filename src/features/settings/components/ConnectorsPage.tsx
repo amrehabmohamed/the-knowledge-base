@@ -7,14 +7,23 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { useConnectors } from "../hooks/useConnectors";
 import { ConnectorCard } from "./ConnectorCard";
 
-const KNOWN_PROVIDERS = ["google_calendar"] as const;
+const KNOWN_PROVIDERS = ["google_calendar", "tech_trax_crm"] as const;
+
+// In the local emulator, Google's OAuth servers reject our placeholder
+// client_id (`local-dev`) with invalid_client 401. Hide the card so testers
+// aren't tempted to click it. GCal continues to work in staging/prod.
+const HIDDEN_PROVIDERS_LOCAL = new Set<string>(
+  import.meta.env.VITE_USE_EMULATORS === "true" ? ["google_calendar"] : []
+);
 
 export function ConnectorsPage() {
   const navigate = useNavigate();
   const { connectors, loading, error, connect, disconnect } = useConnectors();
 
-  const visible = connectors.filter((c) =>
-    KNOWN_PROVIDERS.includes(c.provider as (typeof KNOWN_PROVIDERS)[number])
+  const visible = connectors.filter(
+    (c) =>
+      KNOWN_PROVIDERS.includes(c.provider as (typeof KNOWN_PROVIDERS)[number]) &&
+      !HIDDEN_PROVIDERS_LOCAL.has(c.provider)
   );
 
   return (

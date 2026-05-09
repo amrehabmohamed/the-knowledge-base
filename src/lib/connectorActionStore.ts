@@ -24,8 +24,10 @@ export interface ScopeRuntimeState {
 const actionMap = new Map<string, ActionRuntimeState>();
 const scopeMap = new Map<string, ScopeRuntimeState>();
 const subscribers = new Set<() => void>();
+let storeTick = 0;
 
 function notify() {
+  storeTick++;
   subscribers.forEach((fn) => fn());
 }
 
@@ -63,6 +65,37 @@ export function useActionState(actionId: string): ActionRuntimeState | undefined
     () => undefined
   );
 }
+
+const RESOLVED_STATES = new Set<ActionRuntimeState["state"]>([
+  "executed",
+  "cancelled",
+  "expired",
+  "error",
+]);
+
+/**
+ * True when an action is past the user-decision phase — confirmed/cancelled,
+ * expired, or errored. Pending/confirming/cancelling all return false.
+ */
+export function isActionResolved(actionId: string): boolean {
+  const s = actionMap.get(actionId);
+  return s ? RESOLVED_STATES.has(s.state) : false;
+}
+
+/**
+ * Subscribes the caller to ANY action-state change. Use when a component reads
+ * multiple action states via `isActionResolved`/`getActionState` and needs to
+ * re-render whenever any of them change. Returns a numeric tick that increments
+ * on every notify.
+ */
+export function useActionStoreTick(): number {
+  return useSyncExternalStore(
+    subscribe,
+    () => storeTick,
+    () => 0
+  );
+}
+
 
 export function useScopeState(key: string): ScopeRuntimeState | undefined {
   return useSyncExternalStore(

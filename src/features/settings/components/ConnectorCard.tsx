@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Calendar, Plug } from "lucide-react";
+import { Briefcase, Calendar, Plug } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -19,6 +19,7 @@ const PROVIDER_META: Record<
   { name: string; icon: React.ComponentType<{ className?: string }> }
 > = {
   google_calendar: { name: "Google Calendar", icon: Calendar },
+  tech_trax_crm: { name: "Tech Trax CRM", icon: Briefcase },
 };
 
 interface ConnectorCardProps {

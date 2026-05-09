@@ -1,4 +1,5 @@
 import * as admin from "firebase-admin";
+import { FieldValue } from "firebase-admin/firestore";
 import * as crypto from "crypto";
 import { getProvider } from "./index";
 import { signState, verifyState } from "./stateJwt";
@@ -66,7 +67,7 @@ export async function handleOAuthCallback(
     `users/${decoded.uid}/connectors/${decoded.provider}`
   );
 
-  const now = admin.firestore.FieldValue.serverTimestamp();
+  const now = FieldValue.serverTimestamp();
   const data: Record<string, unknown> = {
     provider: decoded.provider,
     status: "connected",

@@ -79,3 +79,50 @@ export async function confirmPendingAction(
 export async function cancelPendingAction(actionId: string): Promise<void> {
   await callFunction<{ ok: true }>("cancelPendingAction", { actionId });
 }
+
+/**
+ * Persisted status of a previously-proposed action. Used by
+ * ActionApprovalCard on mount (after a page refresh) to recover the resolution
+ * from Firestore so the card renders the actual outcome (executed / cancelled
+ * / error / expired) instead of falsely showing a still-clickable Confirm.
+ *
+ * `expired` can come back from any of: doc no longer exists, doc explicitly
+ * marked expired, or status is `awaiting_approval` but past `expiresAt`.
+ */
+export type PersistedActionStatus =
+  | "awaiting_approval"
+  | "approved"
+  | "executed"
+  | "cancelled"
+  | "expired"
+  | "error";
+
+export interface PendingActionStatusResponse {
+  status: PersistedActionStatus;
+  result?: unknown;
+  error?: string | null;
+  expiresAt?: number;
+}
+
+export async function getPendingActionStatus(
+  actionId: string
+): Promise<PendingActionStatusResponse> {
+  return await callFunction<PendingActionStatusResponse>(
+    "getPendingActionStatus",
+    { actionId }
+  );
+}
+
+export interface TechTraxConnectInput {
+  state: string;
+  baseUrl: string;
+  email: string;
+  password: string;
+}
+
+export async function connectTechTraxCrm(input: TechTraxConnectInput): Promise<{ ok: boolean; email?: string; code?: string; message?: string }> {
+  return callFunction<{ ok: boolean; email?: string; code?: string; message?: string }>(
+    "connectTechTraxCrm",
+    input as unknown as Record<string, unknown>
+  );
+}

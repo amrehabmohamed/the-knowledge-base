@@ -1,4 +1,5 @@
 import * as admin from "firebase-admin";
+import { FieldValue } from "firebase-admin/firestore";
 import { google } from "googleapis";
 import type { OAuth2Client } from "google-auth-library";
 import {
@@ -171,7 +172,7 @@ export const googleCalendarProvider: ConnectorProvider = {
     oauth.on("tokens", (t) => {
       (async () => {
         try {
-          const update: Record<string, unknown> = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
+          const update: Record<string, unknown> = { updatedAt: FieldValue.serverTimestamp() };
           if (t.access_token) {
             update.accessTokenCt = await encrypt(t.access_token);
             if (t.expiry_date) update.accessTokenExpiry = t.expiry_date;
