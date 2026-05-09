@@ -67,6 +67,42 @@ export const SUMMARIZATION_THRESHOLD = 500_000;
 export const SUMMARIZATION_MODEL = "gemini-2.5-flash";
 export const SUMMARIZATION_COOLDOWN_MS = 60_000;
 
+// --- Connectors (OAuth + per-user external integrations) ---
+
+export const CONNECTORS_ENABLED =
+  (process.env.CONNECTORS_ENABLED || "false").toLowerCase() === "true";
+
+function requireConnectorEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) {
+    if (CONNECTORS_ENABLED) {
+      throw new Error(`${name} is required when CONNECTORS_ENABLED=true`);
+    }
+    return "";
+  }
+  return v;
+}
+
+export function getGoogleOAuthClientId(): string {
+  return requireConnectorEnv("GOOGLE_OAUTH_CLIENT_ID");
+}
+
+export function getGoogleOAuthClientSecret(): string {
+  return requireConnectorEnv("GOOGLE_OAUTH_CLIENT_SECRET");
+}
+
+export function getGoogleOAuthRedirectUri(): string {
+  return requireConnectorEnv("GOOGLE_OAUTH_REDIRECT_URI");
+}
+
+export function getConnectorStateSigningSecret(): string {
+  return requireConnectorEnv("CONNECTOR_STATE_SIGNING_SECRET");
+}
+
+export function getConnectorKmsKey(): string | undefined {
+  return process.env.CONNECTOR_KMS_KEY || undefined;
+}
+
 // --- Telegram ---
 
 export function getTelegramBotToken(): string {

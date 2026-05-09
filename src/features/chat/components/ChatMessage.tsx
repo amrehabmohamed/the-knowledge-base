@@ -3,7 +3,13 @@ import { Markdown } from "@/components/ui/markdown";
 import { getTextDir } from "@/lib/utils";
 import { CitationMarker } from "./CitationMarker";
 import { ToolCallList } from "./ToolCallCard";
+import { ActionApprovalList } from "./ActionApprovalCard";
+import { ScopeExpansionList } from "./ScopeExpansionCard";
 import type { Message, Citation, Attachment, ToolCall } from "@/types/session";
+import type {
+  PendingActionEvent,
+  ScopeExpansionEvent,
+} from "@/lib/connectors";
 
 interface ChatMessageProps {
   message: Message;
@@ -13,6 +19,8 @@ interface StreamingMessageProps {
   content: string;
   citations: Citation[];
   toolCalls?: ToolCall[];
+  pendingActions?: PendingActionEvent[];
+  scopeExpansions?: ScopeExpansionEvent[];
 }
 
 function formatMetrics(metrics: { ttftMs: number; totalMs: number }): string {
@@ -153,6 +161,12 @@ export function ChatMessage({ message }: ChatMessageProps) {
           message.content,
           message.citations ?? []
         )}
+        {message.scopeExpansions && message.scopeExpansions.length > 0 && (
+          <ScopeExpansionList events={message.scopeExpansions} />
+        )}
+        {message.pendingActions && message.pendingActions.length > 0 && (
+          <ActionApprovalList actions={message.pendingActions} />
+        )}
         {message.metrics && (
           <p className="text-[11px] text-muted-foreground/50">
             {formatMetrics(message.metrics)}
@@ -167,8 +181,12 @@ export function StreamingMessage({
   content,
   citations,
   toolCalls,
+  pendingActions,
+  scopeExpansions,
 }: StreamingMessageProps) {
   const hasTools = toolCalls && toolCalls.length > 0;
+  const hasScope = scopeExpansions && scopeExpansions.length > 0;
+  const hasPending = pendingActions && pendingActions.length > 0;
   return (
     <div className="flex gap-3">
       <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted mt-0.5">
@@ -184,6 +202,8 @@ export function StreamingMessage({
             Thinking...
           </div>
         ) : null}
+        {hasScope && <ScopeExpansionList events={scopeExpansions!} />}
+        {hasPending && <ActionApprovalList actions={pendingActions!} />}
       </div>
     </div>
   );

@@ -14,7 +14,25 @@ import {
   SUMMARIZATION_THRESHOLD,
   SUMMARIZATION_COOLDOWN_MS,
   getStorageBucketName,
+  CONNECTORS_ENABLED,
 } from "./config";
+import {
+  buildOAuthStartUrl,
+  handleOAuthCallback,
+} from "./services/connectors/oauth";
+import {
+  getProvider,
+  getAllProviders,
+  executeApprovedAction,
+  getPendingAction,
+  markStatus,
+  decrypt,
+  writeAudit,
+} from "./services/connectors";
+import type {
+  ConnectorRecord,
+  ConnectorStatus,
+} from "./services/connectors/types";
 import { telegramWebhook } from "./telegram/webhook";
 import type { Source } from "./types";
 
@@ -504,7 +522,9 @@ export const chat = onRequest(
       const stream = routeChat(
         query ?? "",
         chatHistory,
+        decodedToken.uid,
         notebookId,
+        sessionId,
         modelId ?? "gemini-3-flash",
         customSystemPrompt,
         "web",
@@ -528,6 +548,14 @@ export const chat = onRequest(
         } else if (chunk.type === "tool_call") {
           res.write(
             `event: tool_call\ndata: ${JSON.stringify(chunk.toolCall)}\n\n`
+          );
+        } else if (chunk.type === "action_approval_required") {
+          res.write(
+            `event: action_approval_required\ndata: ${JSON.stringify(chunk.action)}\n\n`
+          );
+        } else if (chunk.type === "scope_expansion_required") {
+          res.write(
+            `event: scope_expansion_required\ndata: ${JSON.stringify(chunk.scope)}\n\n`
           );
         } else if (chunk.type === "done") {
           const totalMs = Date.now() - startTime;
@@ -565,3 +593,279 @@ export const chat = onRequest(
     res.end();
   }
 );
+
+// --- Connector OAuth (HTTP, not callable; OAuth requires raw HTTP redirects) ---
+
+function renderCallbackHtml(
+  payload: Record<string, unknown>,
+  fallbackMessage: string
+): string {
+  const json = JSON.stringify(payload).replace(/</g, "\\u003c");
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>Connector</title>
+<style>body{font-family:system-ui,sans-serif;padding:32px;color:#222}</style>
+</head><body>
+<p>${fallbackMessage}</p>
+<script>
+  (function(){
+    var msg = ${json};
+    try {
+      // TODO: restrict targetOrigin to a trusted frontend origin once configured.
+      if (window.opener) { window.opener.postMessage(msg, "*"); }
+    } catch (e) {}
+    try { window.close(); } catch (e) {}
+  })();
+</script>
+</body></html>`;
+}
+
+export const connectorOAuthStart = onRequest(
+  { cors: true },
+  async (req, res) => {
+    if (!CONNECTORS_ENABLED) {
+      res.status(400).json({ error: "Connectors are disabled." });
+      return;
+    }
+
+    let decodedToken;
+    try {
+      decodedToken = await validateAuth(req);
+    } catch {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const providerId =
+      (req.query.provider as string | undefined) || "google_calendar";
+    const modeRaw = (req.query.mode as string | undefined) || "initial";
+    const mode: "initial" | "expand" =
+      modeRaw === "expand" ? "expand" : "initial";
+
+    if (!getProvider(providerId)) {
+      res.status(404).json({ error: `Unknown provider: ${providerId}` });
+      return;
+    }
+
+    try {
+      const url = buildOAuthStartUrl(decodedToken.uid, providerId, mode);
+      res.json({ url });
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to build OAuth URL.";
+      console.error("[connectorOAuthStart] error:", err);
+      res.status(500).json({ error: message });
+    }
+  }
+);
+
+export const connectorOAuthCallback = onRequest(
+  { cors: true, invoker: "public" },
+  async (req, res) => {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+
+    const error = req.query.error as string | undefined;
+    if (error) {
+      res
+        .status(400)
+        .send(
+          renderCallbackHtml(
+            { type: "connector:error", error },
+            "Connection cancelled. You can close this window."
+          )
+        );
+      return;
+    }
+
+    const code = req.query.code as string | undefined;
+    const state = req.query.state as string | undefined;
+    if (!code || !state) {
+      res
+        .status(400)
+        .send(
+          renderCallbackHtml(
+            { type: "connector:error", error: "missing_code_or_state" },
+            "Missing authorization code. You can close this window."
+          )
+        );
+      return;
+    }
+
+    try {
+      const result = await handleOAuthCallback(code, state);
+      res.status(200).send(
+        renderCallbackHtml(
+          {
+            type: "connector:connected",
+            provider: result.provider,
+            email: result.email,
+          },
+          "Connected. You can close this window."
+        )
+      );
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "OAuth callback failed.";
+      console.error("[connectorOAuthCallback] error:", err);
+      res.status(500).send(
+        renderCallbackHtml(
+          { type: "connector:error", error: message },
+          "Connection failed. You can close this window."
+        )
+      );
+    }
+  }
+);
+
+export const getConnectorStatus = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Must be authenticated.");
+  }
+  const uid = request.auth.uid;
+  const db = admin.firestore();
+  const providers = getAllProviders();
+
+  const connectors: ConnectorStatus[] = await Promise.all(
+    providers.map(async (provider) => {
+      const snap = await db
+        .doc(`users/${uid}/connectors/${provider.id}`)
+        .get();
+      if (!snap.exists) return { provider: provider.id, connected: false };
+      const rec = snap.data() as ConnectorRecord;
+      if (rec.status !== "connected") {
+        return { provider: provider.id, connected: false };
+      }
+      return {
+        provider: provider.id,
+        connected: true,
+        email: rec.googleAccountEmail,
+        scopes: rec.scopes,
+        connectedAt: rec.connectedAt?.toDate().toISOString(),
+      };
+    })
+  );
+
+  return { connectors };
+});
+
+export const disconnectConnector = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Must be authenticated.");
+  }
+  const providerId = request.data?.provider;
+  if (!providerId || typeof providerId !== "string") {
+    throw new HttpsError("invalid-argument", "provider is required.");
+  }
+  const provider = getProvider(providerId);
+  if (!provider) {
+    throw new HttpsError("not-found", `Unknown provider: ${providerId}`);
+  }
+
+  const uid = request.auth.uid;
+  const db = admin.firestore();
+  const ref = db.doc(`users/${uid}/connectors/${providerId}`);
+  const snap = await ref.get();
+
+  if (snap.exists) {
+    const rec = snap.data() as ConnectorRecord;
+    if (rec.refreshTokenCt) {
+      try {
+        const refreshToken = await decrypt(rec.refreshTokenCt);
+        await provider.revoke(refreshToken);
+      } catch (err: unknown) {
+        // Best-effort; revoke can 400 if token already invalid.
+        console.warn(
+          `[disconnectConnector] revoke failed for ${providerId}:`,
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+    await ref.update({
+      status: "revoked",
+      refreshTokenCt: admin.firestore.FieldValue.delete(),
+      accessTokenCt: admin.firestore.FieldValue.delete(),
+      accessTokenExpiry: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+
+  return { ok: true };
+});
+
+export const confirmPendingAction = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Must be authenticated.");
+  }
+  const actionId = request.data?.actionId;
+  if (!actionId || typeof actionId !== "string") {
+    throw new HttpsError("invalid-argument", "actionId is required.");
+  }
+
+  const uid = request.auth.uid;
+  const pending = await getPendingAction(actionId);
+  if (!pending) {
+    throw new HttpsError("not-found", "Action not found");
+  }
+  if (pending.uid !== uid) {
+    throw new HttpsError("permission-denied", "Action does not belong to user");
+  }
+  if (pending.status !== "awaiting_approval") {
+    throw new HttpsError(
+      "failed-precondition",
+      `Action status is '${pending.status}'`
+    );
+  }
+  if (pending.expiresAt.toMillis() < Date.now()) {
+    await markStatus(actionId, "expired");
+    throw new HttpsError("deadline-exceeded", "Action expired");
+  }
+
+  // executeApprovedAction transitions awaiting_approval -> executed (or error) atomically.
+  // No intermediate 'approved' state.
+  try {
+    const result = await executeApprovedAction(actionId, uid);
+    return { ok: true, result };
+  } catch (err: unknown) {
+    const message =
+      err instanceof Error ? err.message : "Action execution failed.";
+    return { ok: false, error: message };
+  }
+});
+
+export const cancelPendingAction = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Must be authenticated.");
+  }
+  const actionId = request.data?.actionId;
+  if (!actionId || typeof actionId !== "string") {
+    throw new HttpsError("invalid-argument", "actionId is required.");
+  }
+
+  const uid = request.auth.uid;
+  const pending = await getPendingAction(actionId);
+  if (!pending) {
+    throw new HttpsError("not-found", "Action not found");
+  }
+  if (pending.uid !== uid) {
+    throw new HttpsError("permission-denied", "Action does not belong to user");
+  }
+  if (pending.status !== "awaiting_approval") {
+    throw new HttpsError(
+      "failed-precondition",
+      `Action status is '${pending.status}'`
+    );
+  }
+
+  await markStatus(actionId, "cancelled");
+  await writeAudit({
+    uid,
+    sessionId: pending.sessionId,
+    provider: pending.provider,
+    tool: pending.tool,
+    args: pending.args,
+    status: "cancelled",
+    idempotencyKey: pending.idempotencyKey,
+    latencyMs: 0,
+  });
+
+  return { ok: true };
+});
