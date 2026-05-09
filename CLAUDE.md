@@ -4,15 +4,64 @@ A single-user knowledge management tool inspired by NotebookLM. Upload documents
 
 ## ⚠️ Current Working State (read this first)
 
-- **Active branch**: `main`. Phase 5 (multi-tool orchestrator) and Phase 6 (connectors framework + Google Calendar) are both merged. The `feat/multi-tool-orchestrator` and `feat/connectors-google-calendar` branches have been deleted from local + remote.
-- **Active environment**: `staging` (Firebase project `the-knowledge-base-staging`). All deploys/tests go there. Production (`the-knowledge-base-82d72`) has the new code on `main` but the feature flags below keep prod runtime behavior unchanged.
-- **What's shipped**: Phase 5 multi-tool orchestrator + Phase 6 Connectors framework with Google Calendar as the first provider. End-to-end verified on staging.
-- **How to deploy to staging**: `firebase deploy --only functions --project staging` (or `npm run deploy:staging`). Frontend dev mode: `npm run dev:staging`.
-- **How to deploy to prod**: `firebase deploy --only functions --project prod` — only AFTER prod env vars are set, GCP OAuth verification is complete (for connectors), and the user has explicitly approved.
-- **Feature flags (3 layers, all default off in prod)**:
-  1. `MULTI_TOOL_ENABLED` (functions env) — gates the orchestrator path. `true` on staging, `false` on prod (legacy single-tool path).
-  2. `CONNECTORS_ENABLED` (functions env) — gates `bootConnectors()` and per-user connector tool merging. `true` on staging, `false` on prod. **Must remain `false` wherever `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET` are unset** — config getters throw lazily, but the connector page would surface confusing errors otherwise.
-  3. `VITE_CONNECTORS_ENABLED` (frontend env, build-time) — gates the `/settings/connectors` route and the Connectors nav button. `true` on staging, `false` on prod. Hides the UI until prod functions are deployed and the prod backend flag is on.
+- **Active branch**: `feature/tech-trax-crm-connector` (cut from `main`, no upstream yet). Building the **TechTrax CRM connector** as the second provider on the framework. `main` has Phase 5 + Phase 6 merged (orchestrator + Google Calendar) at `edf040d`.
+- **Active environment**: **local Firebase emulator** (`firebase emulators:start --only functions,firestore,auth`) — port 5002 for functions, 4000 for the UI, project alias `demo-kb-local`. Staging (`the-knowledge-base-staging`) still runs the merged Phase 5+6 code from before this branch. Production untouched.
+- **What's in flight**: TechTrax CRM connector with 7 tools (`crm_list_stages`, `crm_list_leads`, `crm_get_lead`, `crm_create_lead`, `crm_update_lead`, `crm_transition_stage`, `crm_assign_lead`). Plus framework-level enhancements that benefit *every* connector: natural-language date parsing, server-side phone normalization, optimistic-lock race fix, post-refresh card state recovery. See "Phase 7" entry under Build Status.
+- **How to start a fresh session continuing this work**:
+  1. `cd /Users/Amr/Downloads/apps/the-knowledge-base && git checkout feature/tech-trax-crm-connector`.
+  2. `cd functions && npm install && npm run build` (chrono-node, libphonenumber-js, googleapis, etc. all already in package.json).
+  3. Start TechTrax backend locally (their repo) so the CRM API responds at whatever URL the connector is configured to call (set via the Tech Trax connect callable; stored encrypted per-user).
+  4. `firebase emulators:start --only functions,firestore,auth` from the project root. Watch its stdout for `[CONFIRM]`, `[CONNECTOR]`, `[tech_trax_crm.*]` log lines.
+  5. `npm run dev:staging` for the frontend (port 5173). The frontend points at the *local emulator* via the standard Firebase emulator wiring — verify `src/lib/firebase.ts` has `connectFunctionsEmulator` / `connectFirestoreEmulator` / `connectAuthEmulator` wired when running locally.
+  6. Login as `admin@test.local` / `Admin@123` (created in the auth emulator; password set via Admin SDK earlier — see memory entry).
+  7. Submit chat prompts to exercise the CRM. The agent will route to `crm_*` tools.
+- **How to deploy to staging or prod**: don't from this branch. When TechTrax is verified, merge into `main` and deploy via `firebase deploy --only functions --project staging` first, then prod after env vars are set on the prod GCP project.
+- **Feature flags (4 layers — Phase 7 added one)**:
+  1. `MULTI_TOOL_ENABLED` (functions env) — gates the orchestrator path. `true` on staging, `false` on prod.
+  2. `CONNECTORS_ENABLED` (functions env) — gates `bootConnectors()` and per-user connector tool merging. `true` on staging, `false` on prod. **Must remain `false` wherever any provider's required env vars (`GOOGLE_OAUTH_*`, `TECH_TRAX_*` if any) are unset.**
+  3. `VITE_CONNECTORS_ENABLED` (frontend env, build-time) — gates `/settings/connectors` route and Connectors nav button. `true` on staging, `false` on prod.
+  4. **TechTrax credentials are per-user, captured by the `connectTechTraxCrm` callable**, not a global env var. Stored at `users/{uid}/connectors/tech_trax_crm/_secrets` (encrypted via Cloud KMS envelope, same shape as Google's refresh token).
+
+## Resuming work in a new session — quick orientation
+
+If you're a fresh Claude session reading this, here's what you need to know to continue without breaking anything:
+
+### Where we are right now
+- Branch `feature/tech-trax-crm-connector`, **uncommitted**. The current diff = full TechTrax CRM connector + Phase 7 framework enhancements. Run `git status` and `git diff main..HEAD -- ':(exclude)package-lock.json'` to see the full picture.
+- `main` has Phase 5 + 6 merged at `edf040d`. **Don't push this branch to main yet** — TechTrax connector hasn't been verified end-to-end through every flow.
+- Local Firebase emulator is the test environment. Staging Calendar still works (deployed) but TechTrax CRM is local-only until merged.
+
+### Files to skim first
+- `functions/src/services/connectors/types.ts` — the `ConnectorProvider`, `ConnectorTool`, `ConnectorContext` shape. Every provider plugs in here.
+- `functions/src/services/connectors/registry.ts` — the singleton registry + `dispatch()` (read vs write vs scope_required vs validation_pending vs awaiting_approval result kinds).
+- `functions/src/services/connectors/google_calendar/index.ts` — the reference provider.
+- `functions/src/services/connectors/tech_trax_crm/{index,handlers,validator,schemaCache,client,phone,connectCallable,credentialsForm}.ts` — current TechTrax work.
+- `functions/src/services/connectors/dateTime.ts` — natural-language date parsing helper.
+- `functions/src/index.ts` — Cloud Functions exports (`chat`, `connectorOAuth*`, `getConnectorStatus`, `disconnectConnector`, `confirmPendingAction`, `cancelPendingAction`, `getPendingActionStatus`, `connectTechTraxCrm`, `techTraxCredentialsForm`).
+- `src/lib/connectorActionStore.ts` — module-level runtime state for HITL cards.
+- `src/features/chat/components/ActionApprovalCard.tsx` — the HITL approval UI.
+
+### Patterns to follow when adding new tools / connectors
+- **Never emit `undefined`** in objects you persist to Firestore. Build incrementally (`if (raw.x) obj.x = raw.x`).
+- **Stripping `undefined`** with `Object.entries` recursion is the wrong default — it clobbers `Timestamp` and other class instances (`constructor !== Object`). The helpers in `audit.ts` / `pendingActions.ts` already special-case this; if you write your own, use the same constructor check.
+- **Idempotency on writes** — derive a deterministic key from `{uid, sessionId, tool, canonical(args)}` and pass it to the upstream API (Calendar accepts `id`; Tech Trax accepts `Idempotency-Key`).
+- **Read-before-write** — for update / delete / RSVP / transition, always GET first to validate existence and (for Tech Trax) capture a fresh `Last-Modified` lock token.
+- **Throw normalized errors** — registry catches `{code, message, retryable}` shape and writes `reasonCode` to the audit log. Don't throw raw `Error` from handlers; throw the normalized object.
+- **Preflight validation** for write tools — implement `preflight(args, ctx)` on the `ConnectorTool`. Throw `ValidationPendingError(missing, message)` so the agent re-asks the user *before* the HITL approval card is shown. This is what makes phone normalization, date normalization, and missing-required-field errors a great UX.
+- **Mutate args in preflight** when normalizing inputs (phone, dates) — the registry computes idempotency from args BEFORE preflight, so post-preflight mutations don't change the key. The HITL card preview reads from the (now-canonical) args.
+
+### Things to re-verify before declaring something "done"
+1. `cd functions && npm run build` (TypeScript strict).
+2. `cd functions/lib/services/connectors/__tests__ && node *.test.js` — runs `stateJwt`, `crypto`, `registry`, `dateTime`, and `phone` tests.
+3. Functions emulator restarts cleanly on `lib/` change; `[CONFIRM]` / `[CONNECTOR]` lines appear in stdout when chat triggers a tool.
+4. Approval card persists state across browser refresh (open chat with a resolved card, ⌘⇧R, card should stay collapsed at "done ✓" not bounce back to pending).
+5. CONNECTORS_ENABLED=false path leaves orchestrator declarations identical to baseline (regression check).
+
+### What the user is likely to ask next
+- Continue building TechTrax CRM tools or fix issues that surface during testing.
+- Add a third connector (Gmail / Drive / Notion / Linear were mentioned in roadmap).
+- Polish the agent's tool-selection prompt so it picks the right tool more reliably across many providers.
+- Eventually merge this branch into `main` once TechTrax flows are verified.
 
 ## Tech Stack
 
@@ -181,6 +230,23 @@ gcloud functions list --project=the-knowledge-base-staging --regions=us-central1
 - **Stale cards after page reload** — actionIds older than 5 minutes are server-side-expired. Clicking Confirm on yesterday's card returns `failed-precondition` / `deadline-exceeded`. Expected behavior; UI surfaces the error.
 - **`stripUndefined` and Firestore Timestamps** — see first bullet. Generic `Object.entries(...)` recursion clobbers `Timestamp` to `{seconds, nanoseconds}` without `.toMillis()`. The constructor check is load-bearing.
 - **Telegram bot signature** — `routeChat` now takes `uid` + `sessionId`. `functions/src/telegram/chat.ts` was updated to pass `link.firebaseUid` + the session id; legacy single-tool path doesn't use them, but the signature must compile.
+
+- **Phase 7** (in-progress on `feature/tech-trax-crm-connector`, builds on `main`): TechTrax CRM connector + framework-level UX hardening. Per-user credential capture via `connectTechTraxCrm` callable (no global OAuth — TechTrax uses bearer tokens minted from a per-user email/password sign-in, encrypted via the same KMS envelope). 7 tools: `crm_list_stages`, `crm_list_leads`, `crm_get_lead` (read), `crm_create_lead`, `crm_update_lead`, `crm_transition_stage`, `crm_assign_lead` (write — HITL gated). Schema cache at `users/{uid}/connectors/tech_trax_crm/_schema/v1` (1-hour TTL) maps custom-field names → fieldIds for routing agent inputs. Joi-aware preflight validation (`validateCreate`, `validateTransition`) surfaces missing mandatory fields as `ValidationPendingError` so the agent re-asks the user *before* the HITL approval card is shown. Optimistic locking via `If-Unmodified-Since` headers; the connector refreshes the lock token at handler start (squashes the user-think-time race) and re-captures `Last-Modified` between chained writes (PATCH then transition). Same KMS envelope encryption + audit log + HITL framework as Phase 6. Backwards-compatible: when `tech_trax_crm` provider isn't registered (no `bootConnectors()` call) or the user hasn't connected, behavior unchanged.
+
+### Phase 7 — framework-level enhancements (apply to all connectors)
+
+These benefit every provider — Google Calendar, TechTrax CRM, and any future ones:
+
+- **Natural-language date parsing** (`functions/src/services/connectors/dateTime.ts`). Built on `chrono-node`. `parseDateTimeToIso(input, opts)` accepts ISO 8601 strings (pass-through), epoch ms (number), native `Date`, or natural language ("tomorrow at 4pm", "next Monday 10am", "in 2 weeks"). Default timezone `Africa/Cairo` — override per call. `dateOnly: true` for fields like `DOB` returns `YYYY-MM-DD`. Used in:
+  - `google_calendar/handlers.ts` — `start.dateTime`, `end.dateTime`, `timeMin`, `timeMax`.
+  - `tech_trax_crm/handlers.ts` — known date-shaped fields (`bookingDate`, `snoozeDate`, `followUpDate`, `appointmentDate`, `meetingDate` for datetime; `DOB`, `dob`, `birthDate` for date-only).
+- **Phone normalization** (`functions/src/services/connectors/tech_trax_crm/phone.ts`). Built on `libphonenumber-js`. `normalizePhoneToE164(input)` parses any free-form phone string to E.164 (`+201012345678`). Default country `EG` (override per tenant later). Local Egyptian numbers like `01012345678` or `1012345678` get auto-prefixed to `+20`; international numbers (`+1 415 555 0100`) are preserved. Junk throws so the agent can re-ask. Wired into create/update lead handlers and the preflight (so the approval card preview shows the canonical number).
+- **Optimistic-lock token refresh** (`tech_trax_crm/handlers.ts:refreshLockToken`). HITL approval window means preflight `Last-Modified` is 30s+ old by Confirm time → 412 `precondition_failed`. Handler refreshes the lock token via a fresh `GET /api/crm/leads/{id}` at execute time, and captures the new `Last-Modified` from each write response so chained writes don't race against themselves.
+- **Persisted action state recovery on refresh** — new `getPendingActionStatus({actionId})` callable in `functions/src/index.ts`. Auth-gated, ownership-checked, read-only (never mutates the doc). Returns `{status, result, error, expiresAt}`. The frontend `ActionApprovalCard` calls it on mount when the in-memory `connectorActionStore` is empty (typical after a page refresh) and seeds the runtime state — so cards keep their resolution (`executed` / `cancelled` / `error` / `expired`) instead of falsely showing a still-clickable Confirm button.
+- **Enriched 4xx error messages** (`tech_trax_crm/client.ts:enrichClientErrorMessage`). When the CRM backend returns `400 { message: "Validation error", errors: [...] }`, the helper appends the per-field `errors` / `details` / `validationErrors` reasons so the agent (and audit log, and UI) gets `"Validation error — phone: must be in international format"` instead of just `"Validation error"`.
+- **`confirmPendingAction` no longer eats errors** — earlier the catch block was `err instanceof Error ? err.message : "Action execution failed."` which silently dropped registry-thrown plain-object errors (`{code, message, retryable}` shape). Now extracts `.message` from object form too AND `console.error`s the full err so emulator stdout shows `[CONFIRM] action=... tool=... failed: <real reason> { ... }`.
+- **`schemaCache.normalizeStage` never emits `undefined`** — earlier it built `{color: undefined, allowedNextStages: undefined, slaHours: undefined}` for stages with missing optional fields, which Firestore rejected when caching. Now it only writes keys with defined values. Pattern to follow for any handler that returns objects to be stored: build incrementally with `if (raw.x) obj.x = raw.x` rather than always emitting `undefined`. The `stripUndefined` helpers in `audit.ts` and `pendingActions.ts` are a safety net but cleaner to never produce `undefined` in the first place.
+- **`handleTransitionStage` skips empty PATCH** — when the agent passes `fieldUpdates` whose keys all route to `unrouted` (schema cache didn't recognize them), the resulting patchBody is `{}`. Backend Joi rejects with `"value must have at least 1 key"`. Handler now skips the PATCH entirely in that case, returns `fieldsDropped` in the response so the agent can re-ask, and proceeds with the transition (which then independently surfaces any real mandatoryFields gaps).
 
 ## Connectors (Phase 6 — `feat/connectors-google-calendar`)
 
